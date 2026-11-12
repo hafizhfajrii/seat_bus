@@ -227,6 +227,9 @@ async function initSchema(db: DbClient) {
     `CREATE INDEX IF NOT EXISTS idx_seats_bus ON seats(bus_id)`,
     `CREATE INDEX IF NOT EXISTS idx_booking_seats_booking ON booking_seats(booking_id)`,
     `CREATE INDEX IF NOT EXISTS idx_buses_event ON buses(event_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_seat_holds_bus ON seat_holds(bus_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_bookings_bus_status ON bookings(bus_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_bookings_event_status ON bookings(event_id, status)`,
   ];
 
   for (const sql of statements) {
@@ -252,22 +255,27 @@ async function initSchema(db: DbClient) {
 }
 
 export async function insertBusSeats(db: DbClient, busId: number) {
+  // Satu query multi-baris (bukan 38 query terpisah) supaya cepat dan atomik.
+  const values: string[] = [];
+  const params: unknown[] = [];
   for (const s of BUS_SEAT_TEMPLATES) {
-    await db.execute(
-      `INSERT INTO seats (bus_id, label, tipe, baris, posisi, sisi, posisi_desc, adjacent_labels)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        busId,
-        s.label,
-        s.tipe,
-        s.baris,
-        s.posisi,
-        s.sisi,
-        s.posisiDesc,
-        JSON.stringify(s.adjacentLabels),
-      ]
+    values.push('(?, ?, ?, ?, ?, ?, ?, ?)');
+    params.push(
+      busId,
+      s.label,
+      s.tipe,
+      s.baris,
+      s.posisi,
+      s.sisi,
+      s.posisiDesc,
+      JSON.stringify(s.adjacentLabels)
     );
   }
+  await db.execute(
+    `INSERT INTO seats (bus_id, label, tipe, baris, posisi, sisi, posisi_desc, adjacent_labels)
+     VALUES ${values.join(', ')}`,
+    params
+  );
 }
 
 async function seedDatabase(db: DbClient) {
@@ -383,23 +391,33 @@ export async function createDatabase(options?: { dbPath?: string; connectionStri
     const pool = new Pool({
       connectionString,
       ssl: useSsl ? { rejectUnauthorized: false } : undefined,
-      max: 3,
+      max: Number(process.env.PG_POOL_MAX ?? 10),
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+    });
+    // Tanpa handler ini, error pada koneksi idle bisa mematikan seluruh proses.
+    pool.on('error', (err) => {
+      console.error('Postgres pool error:', err.message);
     });
 
-    // Serialize initSchema + seedDatabase across concurrent serverless cold-start requests
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(727001)');
-      const tx = createPgQueryWrapper(client, null);
-      await initSchema(tx);
-      await seedDatabase(tx);
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw err;
-    } finally {
-      client.release();
+    // Migrasi + seed hanya dijalankan bila SKIP_DB_INIT bukan "1".
+    // Di produksi (Vercel) set SKIP_DB_INIT=1 setelah tabel selesai dibuat, agar
+    // cold start tidak menjalankan puluhan query DDL dan menahan lock di tiap instance.
+    if (process.env.SKIP_DB_INIT !== '1') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(727001)');
+        const tx = createPgQueryWrapper(client, null);
+        await initSchema(tx);
+        await seedDatabase(tx);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
     }
 
     return createPgQueryWrapper(pool, pool);

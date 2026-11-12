@@ -56,7 +56,7 @@ export async function getEventInfo(db: DbClient): Promise<EventInfo> {
 }
 
 export async function getBuses(db: DbClient, includeInactive = false): Promise<BusInfo[]> {
-  await purgeExpiredHolds(db);
+  purgeExpiredHoldsThrottled(db);
   const where = includeInactive ? '' : 'WHERE b.aktif = 1';
   const rows = await db.queryAll<Record<string, unknown>>(
     `SELECT b.*,
@@ -94,6 +94,7 @@ export async function getBuses(db: DbClient, includeInactive = false): Promise<B
 }
 
 async function queryBusSeatRows(db: DbClient, busId: number) {
+  const nowSec = Math.floor(Date.now() / 1000);
   return db.queryAll<Record<string, unknown>>(
     `SELECT
       s.id AS seat_id,
@@ -121,23 +122,24 @@ async function queryBusSeatRows(db: DbClient, busId: number) {
     LEFT JOIN booking_seats bs ON bs.seat_id = s.id AND bs.active_flag = 1
     LEFT JOIN bookings bk ON bk.id = bs.booking_id AND bk.status = 'aktif'
     LEFT JOIN seat_blocks sb ON sb.seat_id = s.id
-    LEFT JOIN seat_holds sh ON sh.seat_id = s.id
+    LEFT JOIN seat_holds sh ON sh.seat_id = s.id AND sh.expires_at > ?
     WHERE s.bus_id = ?
     ORDER BY
       CASE WHEN s.baris = 'R' THEN 1 ELSE 0 END ASC,
       s.baris ASC,
       s.posisi ASC`,
-    [busId]
+    [nowSec, busId]
   );
 }
 
 export async function getPublicBusSeats(
   db: DbClient,
   busId: number,
-  sessionId?: string
+  sessionId?: string,
+  opts: { skipPurge?: boolean; rows?: Array<Record<string, unknown>> } = {}
 ): Promise<PublicSeat[]> {
-  await purgeExpiredHolds(db);
-  const rows = await queryBusSeatRows(db, busId);
+  if (!opts.skipPurge) purgeExpiredHoldsThrottled(db);
+  const rows = opts.rows ?? (await queryBusSeatRows(db, busId));
   return rows.map((r) => {
     const isOccupied = r.booking_id != null;
     const isBlocked = r.block_reason != null;
@@ -169,7 +171,7 @@ export async function getPublicBusSeats(
 }
 
 export async function getAdminBusSeats(db: DbClient, busId: number): Promise<AdminSeat[]> {
-  await purgeExpiredHolds(db);
+  purgeExpiredHoldsThrottled(db);
   const rows = await queryBusSeatRows(db, busId);
   return rows.map((r) => {
     const isOccupied = r.booking_id != null;
@@ -244,6 +246,7 @@ export async function createOrReplaceHold(
     throw new ServiceError('Session ID tidak valid.', 400);
   }
   return db.withTransaction(async (tx) => {
+    await lockBus(tx, params.busId);
     await purgeExpiredHolds(tx);
     if (params.participantId !== undefined) {
       const participant = await getParticipantById(tx, params.participantId);
@@ -271,7 +274,7 @@ export async function createOrReplaceHold(
       };
     }
 
-    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId);
+    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId, { skipPurge: true });
     const seatsMap = buildSeatMap(busSeats);
 
     if (params.mode === 'sendiri') {
@@ -462,6 +465,7 @@ export async function createBooking(
   }
 
   return db.withTransaction(async (tx) => {
+    await lockBus(tx, params.busId);
     await purgeExpiredHolds(tx);
 
     if (params.participantId !== undefined) {
@@ -500,7 +504,7 @@ export async function createBooking(
       );
     }
 
-    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId);
+    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId, { skipPurge: true });
     const seatsMap = buildSeatMap(busSeats);
 
     if (params.mode === 'sendiri') {
@@ -706,6 +710,7 @@ export async function changeBookingSeats(
 ): Promise<BookingDetail> {
   const normalized = normalizeWhatsApp(params.noWhatsapp);
   return db.withTransaction(async (tx) => {
+    await lockBus(tx, params.busId);
     await purgeExpiredHolds(tx);
     const event = await getEventInfo(tx);
     assertRegistrationOpen(event);
@@ -735,7 +740,7 @@ export async function changeBookingSeats(
       throw new ServiceError('Bus tidak ditemukan atau sedang nonaktif.', 404);
     }
 
-    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId);
+    const busSeats = await getPublicBusSeats(tx, params.busId, params.sessionId, { skipPurge: true });
     const seatsMap = buildSeatMap(busSeats);
     const ignoreSeatLabels =
       existing.busId === params.busId ? existing.seats.map((s) => s.label) : [];
@@ -926,9 +931,10 @@ export async function adminManualBook(
   }
 
   return db.withTransaction(async (tx) => {
+    await lockBus(tx, params.busId);
     await purgeExpiredHolds(tx);
     const event = await getEventInfo(tx);
-    const busSeats = await getPublicBusSeats(tx, params.busId);
+    const busSeats = await getPublicBusSeats(tx, params.busId, undefined, { skipPurge: true });
     const seatsMap = buildSeatMap(busSeats);
 
     if (params.mode === 'sendiri') {
@@ -1031,13 +1037,14 @@ export async function adminMoveBookingSeats(
   }
 
   return db.withTransaction(async (tx) => {
+    await lockBus(tx, params.busId);
     await purgeExpiredHolds(tx);
     const existing = await getBookingDetailById(tx, params.bookingId);
     if (!existing || existing.status !== 'aktif') {
       throw new ServiceError('Pesanan aktif tidak ditemukan.', 404);
     }
 
-    const busSeats = await getPublicBusSeats(tx, params.busId);
+    const busSeats = await getPublicBusSeats(tx, params.busId, undefined, { skipPurge: true });
     const seatsMap = buildSeatMap(busSeats);
     const ignoreSeatLabels =
       existing.busId === params.busId ? existing.seats.map((s) => s.label) : [];
@@ -1367,4 +1374,78 @@ export async function getMyBookings(
       );
 
   return hydrateBookings(db, rows);
+}
+
+
+// ---------------- OPTIMASI: cache baca singkat, koalesensi, dan kunci per-bus ----------------
+
+let lastHoldPurgeAt = 0;
+
+/** Bersihkan hold kedaluwarsa paling sering sekali per 5 detik per instance, tanpa menunggu hasilnya. */
+export function purgeExpiredHoldsThrottled(db: DbClient, minIntervalMs = 5000): void {
+  const now = Date.now();
+  if (now - lastHoldPurgeAt < minIntervalMs) return;
+  lastHoldPurgeAt = now;
+  purgeExpiredHolds(db).catch(() => {
+    // Aman diabaikan: query baca sudah menyaring hold kedaluwarsa, dan jalur tulis selalu purge.
+  });
+}
+
+/**
+ * Serialisasi semua perubahan kursi pada satu bus (Postgres advisory lock, otomatis lepas saat transaksi selesai).
+ * Tanpa ini, dua orang yang memesan kursi bersebelahan secara bersamaan bisa sama-sama lolos validasi
+ * aturan jenis kelamin. SQLite sudah diserialisasi oleh BEGIN IMMEDIATE.
+ */
+async function lockBus(tx: DbClient, busId: number): Promise<void> {
+  if (tx.dialect !== 'postgres') return;
+  await tx.execute('SELECT pg_advisory_xact_lock(?)', [900000 + busId]);
+}
+
+interface CacheEntry {
+  at: number;
+  promise: Promise<unknown>;
+}
+const readCache = new Map<string, CacheEntry>();
+
+/** Cache singkat + koalesensi: ratusan permintaan bersamaan hanya memicu satu query ke database. */
+function memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = readCache.get(key);
+  if (hit && now - hit.at < ttlMs) return hit.promise as Promise<T>;
+  const promise = load();
+  const entry: CacheEntry = { at: now, promise };
+  readCache.set(key, entry);
+  promise.catch(() => {
+    if (readCache.get(key) === entry) readCache.delete(key);
+  });
+  return promise;
+}
+
+export function invalidateReadCache(): void {
+  readCache.clear();
+}
+
+export async function getEventPayloadCached(
+  db: DbClient
+): Promise<{ event: EventInfo; buses: BusInfo[] }> {
+  const [event, buses] = await Promise.all([
+    memo('event', 2000, () => getEventInfo(db)),
+    memo('buses', 1000, () => getBuses(db, false)),
+  ]);
+  return { event, buses };
+}
+
+export async function getPublicSeatMapCached(
+  db: DbClient,
+  busId: number,
+  sessionId?: string
+): Promise<{ bus: BusInfo; seats: PublicSeat[] } | null> {
+  const [buses, rows] = await Promise.all([
+    memo('buses', 1000, () => getBuses(db, false)),
+    memo(`seats:${busId}`, 1000, () => queryBusSeatRows(db, busId)),
+  ]);
+  const bus = buses.find((x) => x.id === busId);
+  if (!bus) return null;
+  const seats = await getPublicBusSeats(db, busId, sessionId, { skipPurge: true, rows });
+  return { bus, seats };
 }

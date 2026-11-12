@@ -34,7 +34,9 @@ import {
   getEventInfo,
   getMyBookings,
   getParticipantById,
-  getPublicBusSeats,
+  getEventPayloadCached,
+  getPublicSeatMapCached,
+  invalidateReadCache,
   listAllBookings,
   loginParticipantByEmail,
   lookupBookingsByWhatsApp,
@@ -63,6 +65,14 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    next();
+  });
+
+  // Setiap perubahan data (POST/PUT/DELETE) membuang cache baca di instance ini.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.on('finish', invalidateReadCache);
+    }
     next();
   });
 
@@ -99,8 +109,8 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
     '/api/event',
     asyncHandler(async (_req, res) => {
       const db = await resolveDb();
-      const event = await getEventInfo(db);
-      const buses = await getBuses(db, false);
+      const { event, buses } = await getEventPayloadCached(db);
+      res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=1, stale-while-revalidate=3');
       res.json({ event, buses });
     })
   );
@@ -112,14 +122,13 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
       const db = await resolveDb();
       const busId = Number(req.params.busId);
       const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
-      const buses = await getBuses(db, false);
-      const bus = buses.find((b) => b.id === busId);
-      if (!bus) {
+      const result = await getPublicSeatMapCached(db, busId, sessionId);
+      if (!result) {
         res.status(404).json({ error: 'Bus tidak ditemukan.' });
         return;
       }
-      const seats = await getPublicBusSeats(db, busId, sessionId);
-      res.json({ bus, seats });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ bus: result.bus, seats: result.seats });
     })
   );
 
@@ -220,6 +229,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         ignoreSeatLabels: Array.isArray(ignoreSeatLabels) ? ignoreSeatLabels : undefined,
         participantId: req.participant!.id,
       });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'hold-updated', busId: Number(busId) });
       res.json(result);
     })
@@ -230,6 +240,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
     asyncHandler(async (req, res) => {
       const db = await resolveDb();
       await releaseSessionHold(db, String(req.params.sessionId ?? ''));
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'hold-released' });
       res.json({ ok: true });
     })
@@ -257,6 +268,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         seats: Array.isArray(seats) ? seats : [],
         participantId: req.participant!.id,
       });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-created', busId: Number(busId) });
       res.status(201).json({ booking });
     })
@@ -319,6 +331,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         String(noWhatsapp ?? ''),
         participantPayload?.id
       );
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-cancelled', busId: booking.busId });
       res.json({ booking });
     })
@@ -340,6 +353,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         seats: Array.isArray(seats) ? seats : [],
         participantId: req.participant!.id,
       });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-changed', busId: Number(busId) });
       res.json({ booking });
     })
@@ -475,6 +489,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         String(nama ?? current.nama),
         `Status: ${nextStatus}, Batas WA: ${nextLimit}, Hold: ${nextHold}s`
       );
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'event-updated' });
       res.json({ event: await getEventInfo(db) });
     })
@@ -523,6 +538,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         return newBusId;
       });
 
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'bus-updated', busId });
       res.status(201).json({ buses: await getBuses(db, true), busId });
     })
@@ -561,6 +577,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         nama,
         `Aktif: ${aktif === 1 ? 'Ya' : 'Tidak'}, Sopir: ${posisiSopir}`
       );
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'bus-updated', busId });
       res.json({ buses: await getBuses(db, true) });
     })
@@ -589,6 +606,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
       const block = Boolean(req.body?.block);
       const alasan = req.body?.alasan ? String(req.body.alasan) : undefined;
       await adminToggleBlockSeat(db, req.admin!, { seatId, block, alasan });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'seat-block-updated' });
       res.json({ ok: true });
     })
@@ -612,6 +630,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         override: Boolean(override),
         overrideReason: overrideReason ? String(overrideReason) : undefined,
       });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-created', busId: Number(busId) });
       res.status(201).json({ booking });
     })
@@ -631,6 +650,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         override: Boolean(override),
         overrideReason: overrideReason ? String(overrideReason) : undefined,
       });
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-moved', busId: Number(busId) });
       res.json({ booking });
     })
@@ -644,6 +664,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
       const bookingId = Number(req.params.id);
       const reason = req.body?.reason ? String(req.body.reason) : undefined;
       const booking = await adminCancelBooking(db, req.admin!, bookingId, reason);
+      invalidateReadCache();
       broadcastSeatUpdate({ type: 'booking-cancelled', busId: booking.busId });
       res.json({ booking });
     })
