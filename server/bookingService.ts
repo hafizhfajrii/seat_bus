@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { DbClient } from './db';
+import type { DbClient } from './db.js';
 import type {
   AdminSeat,
   BookingDetail,
@@ -13,7 +13,7 @@ import type {
   PublicLookupBooking,
   PublicSeat,
   RegisteredPhone,
-} from '../shared/types';
+} from '../shared/types.js';
 import {
   getSeatEligibilityForSingle,
   isValidWhatsApp,
@@ -21,8 +21,8 @@ import {
   maskWhatsApp,
   normalizeWhatsApp,
   validateCoupleSelection,
-} from '../shared/seatRules';
-import type { AdminSessionPayload } from './auth';
+} from '../shared/seatRules.js';
+import type { AdminSessionPayload } from './auth.js';
 
 export class ServiceError extends Error {
   status: number;

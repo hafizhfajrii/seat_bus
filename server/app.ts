@@ -1,8 +1,8 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { DbClient } from './db';
-import { insertBusSeats } from './db';
+import type { DbClient } from './db.js';
+import { insertBusSeats } from './db.js';
 import {
   ADMIN_COOKIE_NAME,
   PARTICIPANT_COOKIE_NAME,
@@ -19,7 +19,7 @@ import {
   verifyAdminToken,
   verifyParticipantToken,
   verifyPassword,
-} from './auth';
+} from './auth.js';
 import {
   addRegisteredPhonesBulk,
   adminCancelBooking,
@@ -48,9 +48,9 @@ import {
   ServiceError,
   updateParticipantProfile,
   writeAuditLog,
-} from './bookingService';
-import { addSseClient, broadcastSeatUpdate } from './sse';
-import { normalizeWhatsApp } from '../shared/seatRules';
+} from './bookingService.js';
+import { addSseClient, broadcastSeatUpdate } from './sse.js';
+import { normalizeWhatsApp } from '../shared/seatRules.js';
 
 function asyncHandler(fn: (req: AuthedRequest, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {

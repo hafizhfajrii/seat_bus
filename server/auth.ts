@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import type { AdminRole } from '../shared/types.ts';
+import type { AdminRole } from '../shared/types.js';
 
 const AUTH_SECRET =
   process.env.AUTH_SECRET || crypto.createHash('sha256').update(process.cwd() + ':transit-event-secret-v1').digest('hex');

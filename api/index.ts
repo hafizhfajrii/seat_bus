@@ -1,5 +1,5 @@
-import { getDatabase } from '../server/db';
-import { createApp } from '../server/app';
+import { getDatabase } from '../server/db.js';
+import { createApp } from '../server/app.js';
 
 const app = createApp(() => getDatabase());
 

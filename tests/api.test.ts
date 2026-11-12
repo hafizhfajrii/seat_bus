@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createDatabase } from '../server/db';
-import { createApp } from '../server/app';
+import { createDatabase } from '../server/db.js';
+import { createApp } from '../server/app.js';
 
 async function startTestServer() {
   const db = await createDatabase({ dbPath: ':memory:' });

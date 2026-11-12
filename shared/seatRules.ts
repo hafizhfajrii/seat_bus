@@ -1,4 +1,4 @@
-import type { Gender, PublicSeat, SeatTemplateItem } from './types';
+import type { Gender, PublicSeat, SeatTemplateItem } from './types.js';
 
 export const LEG_REST_ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
 

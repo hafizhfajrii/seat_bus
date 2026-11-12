@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDatabase } from '../server/db';
+import { createDatabase } from '../server/db.js';
 import {
   adminCancelBooking,
   adminManualBook,
@@ -12,7 +12,7 @@ import {
   getPublicBusSeats,
   lookupBookingsByWhatsApp,
   ServiceError,
-} from '../server/bookingService';
+} from '../server/bookingService.js';
 
 test('Bus 1 has 38 seats (32 leg_rest A1-H4 + 6 belakang R1-R6)', async () => {
   const db = await createDatabase({ dbPath: ':memory:' });

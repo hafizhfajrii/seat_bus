@@ -1,8 +1,8 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { Pool, type PoolClient } from 'pg';
-import { BUS_SEAT_TEMPLATES } from '../shared/seatRules';
-import { hashPassword } from './auth';
+import { BUS_SEAT_TEMPLATES } from '../shared/seatRules.js';
+import { hashPassword } from './auth.js';
 
 export interface DbClient {
   dialect: 'sqlite' | 'postgres';
