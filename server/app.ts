@@ -5,18 +5,23 @@ import type { DbClient } from './db';
 import { insertBusSeats } from './db';
 import {
   ADMIN_COOKIE_NAME,
+  PARTICIPANT_COOKIE_NAME,
   type AuthedRequest,
   checkRateLimit,
   clearRateLimit,
   hashPassword,
   parseCookies,
   requireAdmin,
+  requireParticipant,
   requireSuperAdmin,
   signAdminToken,
+  signParticipantToken,
   verifyAdminToken,
+  verifyParticipantToken,
   verifyPassword,
 } from './auth';
 import {
+  addRegisteredPhonesBulk,
   adminCancelBooking,
   adminManualBook,
   adminMoveBookingSeats,
@@ -25,16 +30,23 @@ import {
   changeBookingSeats,
   createBooking,
   createOrReplaceHold,
+  deleteRegisteredPhone,
   getAdminBusSeats,
   getBookingDetailByCode,
   getBuses,
   getDashboardSummary,
   getEventInfo,
+  getMyBookings,
+  getParticipantById,
   getPublicBusSeats,
   listAllBookings,
+  listRegisteredPhones,
+  loginParticipantByEmail,
   lookupBookingsByWhatsApp,
+  registerParticipant,
   releaseSessionHold,
   ServiceError,
+  updateParticipantProfile,
   writeAuditLog,
 } from './bookingService';
 import { addSseClient, broadcastSeatUpdate } from './sse';
@@ -116,9 +128,92 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
     })
   );
 
-  // Seat Hold
+  // ---------------- PARTICIPANT AUTH (EMAIL ONLY, NO PASSWORD) ----------------
+
+  app.post(
+    '/api/auth/register',
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      const { email, nama, noWhatsapp } = req.body ?? {};
+      const participant = await registerParticipant(db, {
+        email: String(email ?? ''),
+        nama: String(nama ?? ''),
+        noWhatsapp: noWhatsapp ? String(noWhatsapp) : undefined,
+      });
+      const token = signParticipantToken({ id: participant.id, email: participant.email });
+      const secureFlag = process.env.VERCEL || process.env.NODE_ENV === 'production' ? '; Secure' : '';
+      res.setHeader(
+        'Set-Cookie',
+        `${PARTICIPANT_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${secureFlag}`
+      );
+      res.status(201).json({ participant });
+    })
+  );
+
+  app.post(
+    '/api/auth/login',
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      const { email } = req.body ?? {};
+      const participant = await loginParticipantByEmail(db, String(email ?? ''));
+      const token = signParticipantToken({ id: participant.id, email: participant.email });
+      const secureFlag = process.env.VERCEL || process.env.NODE_ENV === 'production' ? '; Secure' : '';
+      res.setHeader(
+        'Set-Cookie',
+        `${PARTICIPANT_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${secureFlag}`
+      );
+      res.json({ participant });
+    })
+  );
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.setHeader('Set-Cookie', `${PARTICIPANT_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+    res.json({ ok: true });
+  });
+
+  app.get(
+    '/api/auth/me',
+    asyncHandler(async (req, res) => {
+      const cookies = parseCookies(req.headers.cookie);
+      const payload = verifyParticipantToken(cookies[PARTICIPANT_COOKIE_NAME]);
+      if (!payload) {
+        res.json({ participant: null });
+        return;
+      }
+      const db = await resolveDb();
+      const participant = await getParticipantById(db, payload.id);
+      res.json({ participant });
+    })
+  );
+
+  app.put(
+    '/api/auth/me',
+    requireParticipant,
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      const { nama, noWhatsapp } = req.body ?? {};
+      const participant = await updateParticipantProfile(db, req.participant!.id, {
+        nama: nama !== undefined ? String(nama) : undefined,
+        noWhatsapp: noWhatsapp !== undefined ? String(noWhatsapp) : undefined,
+      });
+      res.json({ participant });
+    })
+  );
+
+  app.get(
+    '/api/my-bookings',
+    requireParticipant,
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      const bookings = await getMyBookings(db, req.participant!.id);
+      res.json({ bookings });
+    })
+  );
+
+  // Seat Hold (requires logged-in participant + admin-registered WhatsApp)
   app.post(
     '/api/holds',
+    requireParticipant,
     asyncHandler(async (req, res) => {
       const db = await resolveDb();
       const { busId, sessionId, mode, seats, ignoreSeatLabels } = req.body ?? {};
@@ -128,6 +223,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         mode: mode === 'suami_istri' ? 'suami_istri' : 'sendiri',
         seats: Array.isArray(seats) ? seats : [],
         ignoreSeatLabels: Array.isArray(ignoreSeatLabels) ? ignoreSeatLabels : undefined,
+        participantId: req.participant!.id,
       });
       broadcastSeatUpdate({ type: 'hold-updated', busId: Number(busId) });
       res.json(result);
@@ -144,9 +240,10 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
     })
   );
 
-  // Create Booking
+  // Create Booking (requires logged-in participant + admin-registered WhatsApp)
   app.post(
     '/api/bookings',
+    requireParticipant,
     asyncHandler(async (req, res) => {
       const db = await resolveDb();
       const ip = req.ip || 'unknown';
@@ -163,6 +260,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         noWhatsapp: String(noWhatsapp ?? ''),
         sessionId: String(sessionId ?? ''),
         seats: Array.isArray(seats) ? seats : [],
+        participantId: req.participant!.id,
       });
       broadcastSeatUpdate({ type: 'booking-created', busId: Number(busId) });
       res.status(201).json({ booking });
@@ -194,32 +292,47 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
 
       const cookies = parseCookies(req.headers.cookie);
       const isAdmin = Boolean(verifyAdminToken(cookies[ADMIN_COOKIE_NAME]));
+      const participantPayload = verifyParticipantToken(cookies[PARTICIPANT_COOKIE_NAME]);
       const waParam =
         typeof req.query.whatsapp === 'string' ? normalizeWhatsApp(req.query.whatsapp) : '';
 
-      if (!isAdmin && waParam !== booking.noWhatsapp) {
-        throw new ServiceError('Verifikasi nomor WhatsApp diperlukan untuk melihat detail E-Tiket.', 403);
+      let isParticipantOwner = false;
+      if (participantPayload) {
+        const myList = await getMyBookings(db, participantPayload.id);
+        isParticipantOwner = myList.some((b) => b.id === booking.id);
+      }
+
+      if (!isAdmin && !isParticipantOwner && waParam !== booking.noWhatsapp) {
+        throw new ServiceError('Verifikasi akun email atau nomor WhatsApp diperlukan untuk melihat E-Tiket.', 403);
       }
       res.json({ booking });
     })
   );
 
-  // Cancel booking by participant
+  // Cancel booking by participant (logged-in account or matching WA)
   app.post(
     '/api/bookings/:id/cancel',
     asyncHandler(async (req, res) => {
       const db = await resolveDb();
+      const cookies = parseCookies(req.headers.cookie);
+      const participantPayload = verifyParticipantToken(cookies[PARTICIPANT_COOKIE_NAME]);
       const bookingId = Number(req.params.id);
       const { noWhatsapp } = req.body ?? {};
-      const booking = await cancelBookingByParticipant(db, bookingId, String(noWhatsapp ?? ''));
+      const booking = await cancelBookingByParticipant(
+        db,
+        bookingId,
+        String(noWhatsapp ?? ''),
+        participantPayload?.id
+      );
       broadcastSeatUpdate({ type: 'booking-cancelled', busId: booking.busId });
       res.json({ booking });
     })
   );
 
-  // Change seats (FR-12)
+  // Change seats (FR-12, requires logged-in participant)
   app.post(
     '/api/bookings/:id/change-seats',
+    requireParticipant,
     asyncHandler(async (req, res) => {
       const db = await resolveDb();
       const bookingId = Number(req.params.id);
@@ -230,6 +343,7 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
         busId: Number(busId),
         sessionId: String(sessionId ?? ''),
         seats: Array.isArray(seats) ? seats : [],
+        participantId: req.participant!.id,
       });
       broadcastSeatUpdate({ type: 'booking-changed', busId: Number(busId) });
       res.json({ booking });
@@ -713,6 +827,38 @@ export function createApp(dbOrProvider: DbClient | (() => Promise<DbClient>)) {
       if (!target) throw new ServiceError('Akun admin tidak ditemukan.', 404);
       await db.execute('DELETE FROM admins WHERE id = ?', [targetId]);
       await writeAuditLog(db, req.admin!, 'DELETE_ADMIN', target.email, 'Akun admin dihapus');
+      res.json({ ok: true });
+    })
+  );
+
+  // Admin: Registered Participant WhatsApp Numbers (Whitelist)
+  app.get(
+    '/api/admin/phones',
+    requireAdmin,
+    asyncHandler(async (_req, res) => {
+      const db = await resolveDb();
+      const phones = await listRegisteredPhones(db);
+      res.json({ phones });
+    })
+  );
+
+  app.post(
+    '/api/admin/phones',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      const result = await addRegisteredPhonesBulk(db, req.admin!, entries);
+      res.status(201).json(result);
+    })
+  );
+
+  app.delete(
+    '/api/admin/phones/:id',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const db = await resolveDb();
+      await deleteRegisteredPhone(db, req.admin!, Number(req.params.id));
       res.json({ ok: true });
     })
   );

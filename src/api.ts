@@ -10,8 +10,10 @@ import type {
   DashboardSummary,
   EventInfo,
   Gender,
+  ParticipantUser,
   PublicLookupBooking,
   PublicSeat,
+  RegisteredPhone,
 } from '../shared/types';
 
 export function getSessionId(): string {
@@ -47,8 +49,26 @@ async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   return data as T;
 }
 
-// Public API
+// Public & Participant API
 export const publicApi = {
+  authMe: () => apiFetch<{ participant: ParticipantUser | null }>('/api/auth/me'),
+  authRegister: (payload: { email: string; nama: string; noWhatsapp?: string }) =>
+    apiFetch<{ participant: ParticipantUser }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  authLogin: (email: string) =>
+    apiFetch<{ participant: ParticipantUser }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  authLogout: () => apiFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  authUpdateProfile: (payload: { nama?: string; noWhatsapp?: string }) =>
+    apiFetch<{ participant: ParticipantUser }>('/api/auth/me', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  getMyBookings: () => apiFetch<{ bookings: BookingDetail[] }>('/api/my-bookings'),
   getEvent: () => apiFetch<{ event: EventInfo; buses: BusInfo[] }>('/api/event'),
   getBusSeats: (busId: number) =>
     apiFetch<{ bus: BusInfo; seats: PublicSeat[] }>(
@@ -188,6 +208,16 @@ export const adminApi = {
     }),
   deleteUser: (id: number) =>
     apiFetch<{ ok: boolean }>(`/api/admin/users/${id}`, {
+      method: 'DELETE',
+    }),
+  listPhones: () => apiFetch<{ phones: RegisteredPhone[] }>('/api/admin/phones'),
+  addPhones: (entries: Array<{ noWhatsapp: string; catatan?: string }>) =>
+    apiFetch<{ added: number; invalid: string[] }>('/api/admin/phones', {
+      method: 'POST',
+      body: JSON.stringify({ entries }),
+    }),
+  deletePhone: (id: number) =>
+    apiFetch<{ ok: boolean }>(`/api/admin/phones/${id}`, {
       method: 'DELETE',
     }),
 };

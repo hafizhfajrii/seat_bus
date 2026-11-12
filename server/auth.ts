@@ -6,12 +6,19 @@ const AUTH_SECRET =
   process.env.AUTH_SECRET || crypto.createHash('sha256').update(process.cwd() + ':transit-event-secret-v1').digest('hex');
 
 export const ADMIN_COOKIE_NAME = 'transit_admin_session';
+export const PARTICIPANT_COOKIE_NAME = 'transit_participant_session';
 
 export interface AdminSessionPayload {
   id: number;
   email: string;
   nama: string;
   role: AdminRole;
+  exp: number;
+}
+
+export interface ParticipantSessionPayload {
+  id: number;
+  email: string;
   exp: number;
 }
 
@@ -77,6 +84,50 @@ export function parseCookies(cookieHeader: string | undefined): Record<string, s
 
 export interface AuthedRequest extends Request {
   admin?: AdminSessionPayload;
+  participant?: ParticipantSessionPayload;
+}
+
+export function signParticipantToken(payload: Omit<ParticipantSessionPayload, 'exp'>): string {
+  const full: ParticipantSessionPayload = {
+    ...payload,
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days
+  };
+  const encoded = Buffer.from(JSON.stringify(full)).toString('base64url');
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update('p:' + encoded).digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+export function verifyParticipantToken(token: string | undefined): ParticipantSessionPayload | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [encoded, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update('p:' + encoded).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as ParticipantSessionPayload;
+    if (!parsed || typeof parsed.id !== 'number' || parsed.exp < Date.now()) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function requireParticipant(req: AuthedRequest, res: Response, next: NextFunction) {
+  const cookies = parseCookies(req.headers.cookie);
+  const payload = verifyParticipantToken(cookies[PARTICIPANT_COOKIE_NAME]);
+  if (!payload) {
+    res.status(401).json({ error: 'Silakan login dengan email Anda terlebih dahulu untuk memesan atau mengelola kursi.' });
+    return;
+  }
+  req.participant = payload;
+  next();
 }
 
 export function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {

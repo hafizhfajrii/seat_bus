@@ -9,8 +9,10 @@ import type {
   DashboardSummary,
   EventInfo,
   Gender,
+  ParticipantUser,
   PublicLookupBooking,
   PublicSeat,
+  RegisteredPhone,
 } from '../shared/types';
 import {
   getSeatEligibilityForSingle,
@@ -236,6 +238,7 @@ export async function createOrReplaceHold(
     mode: BookingMode;
     seats: HoldSelectionItem[];
     ignoreSeatLabels?: string[];
+    participantId?: number;
   }
 ): Promise<{ expiresAt: string; holdDurationSeconds: number }> {
   if (!params.sessionId || params.sessionId.length < 6) {
@@ -243,6 +246,9 @@ export async function createOrReplaceHold(
   }
   return db.withTransaction(async (tx) => {
     await purgeExpiredHolds(tx);
+    if (params.participantId !== undefined) {
+      await assertParticipantCanBook(tx, params.participantId);
+    }
     const event = await getEventInfo(tx);
     assertRegistrationOpen(event);
 
@@ -423,6 +429,7 @@ export async function createBooking(
     noWhatsapp: string;
     sessionId: string;
     seats: Array<{ label: string; role?: CoupleRole }>;
+    participantId?: number;
   }
 ): Promise<BookingDetail> {
   const normalizedWa = normalizeWhatsApp(params.noWhatsapp);
@@ -436,6 +443,33 @@ export async function createBooking(
 
   return db.withTransaction(async (tx) => {
     await purgeExpiredHolds(tx);
+
+    if (params.participantId !== undefined) {
+      const participant = await getParticipantById(tx, params.participantId);
+      if (!participant) {
+        throw new ServiceError('Akun peserta tidak ditemukan. Silakan login kembali.', 401);
+      }
+      if (participant.noWhatsapp && participant.noWhatsapp !== normalizedWa) {
+        throw new ServiceError(
+          'Nomor WhatsApp pada pemesanan harus sama dengan nomor WhatsApp terdaftar di akun Anda.',
+          403
+        );
+      }
+      const registered = await isPhoneRegistered(tx, normalizedWa);
+      if (!registered) {
+        throw new ServiceError(
+          'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Hubungi admin untuk mendaftarkan nomor Anda agar bisa memesan kursi.',
+          403
+        );
+      }
+      if (!participant.noWhatsapp) {
+        await tx.execute('UPDATE participants SET no_whatsapp = ? WHERE id = ?', [
+          normalizedWa,
+          participant.id,
+        ]);
+      }
+    }
+
     const event = await getEventInfo(tx);
     assertRegistrationOpen(event);
 
@@ -480,9 +514,9 @@ export async function createBooking(
 
       const kode = await generateBookingCode(tx);
       const bookingId = await tx.insertReturningId(
-        `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status)
-         VALUES (?, ?, ?, 'sendiri', ?, ?, 'aktif')`,
-        [kode, event.id, params.busId, namaPemesan, normalizedWa]
+        `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status, participant_id)
+         VALUES (?, ?, ?, 'sendiri', ?, ?, 'aktif', ?)`,
+        [kode, event.id, params.busId, namaPemesan, normalizedWa, params.participantId ?? null]
       );
 
       try {
@@ -528,9 +562,9 @@ export async function createBooking(
       const kode = await generateBookingCode(tx);
       const combinedName = `${namaPemesan} & ${namaIstri}`;
       const bookingId = await tx.insertReturningId(
-        `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status)
-         VALUES (?, ?, ?, 'suami_istri', ?, ?, 'aktif')`,
-        [kode, event.id, params.busId, combinedName, normalizedWa]
+        `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status, participant_id)
+         VALUES (?, ?, ?, 'suami_istri', ?, ?, 'aktif', ?)`,
+        [kode, event.id, params.busId, combinedName, normalizedWa, params.participantId ?? null]
       );
 
       try {
@@ -612,17 +646,23 @@ export async function lookupBookingsByWhatsApp(
 export async function cancelBookingByParticipant(
   db: DbClient,
   bookingId: number,
-  rawWhatsapp: string
+  rawWhatsapp: string,
+  participantId?: number
 ): Promise<BookingDetail> {
   const normalized = normalizeWhatsApp(rawWhatsapp);
   return db.withTransaction(async (tx) => {
-    const bk = await tx.queryOne<{ id: number; no_whatsapp: string; status: string }>(
-      'SELECT id, no_whatsapp, status FROM bookings WHERE id = ?',
-      [bookingId]
-    );
+    const bk = await tx.queryOne<{
+      id: number;
+      no_whatsapp: string;
+      status: string;
+      participant_id: number | null;
+    }>('SELECT id, no_whatsapp, status, participant_id FROM bookings WHERE id = ?', [bookingId]);
     if (!bk) throw new ServiceError('Pesanan tidak ditemukan.', 404);
-    if (bk.no_whatsapp !== normalized) {
-      throw new ServiceError('Nomor WhatsApp tidak cocok dengan data pemesan.', 403);
+
+    const ownsByAccount =
+      participantId !== undefined && bk.participant_id != null && Number(bk.participant_id) === participantId;
+    if (!ownsByAccount && bk.no_whatsapp !== normalized) {
+      throw new ServiceError('Anda tidak memiliki izin membatalkan pesanan ini.', 403);
     }
     if (bk.status !== 'aktif') {
       throw new ServiceError('Pesanan ini sudah dibatalkan sebelumnya.', 400);
@@ -645,6 +685,7 @@ export async function changeBookingSeats(
     busId: number;
     sessionId: string;
     seats: Array<{ label: string; role?: CoupleRole }>;
+    participantId?: number;
   }
 ): Promise<BookingDetail> {
   const normalized = normalizeWhatsApp(params.noWhatsapp);
@@ -655,7 +696,15 @@ export async function changeBookingSeats(
 
     const existing = await getBookingDetailById(tx, params.bookingId);
     if (!existing) throw new ServiceError('Pesanan tidak ditemukan.', 404);
-    if (existing.noWhatsapp !== normalized) {
+    const bkRow = await tx.queryOne<{ participant_id: number | null }>(
+      'SELECT participant_id FROM bookings WHERE id = ?',
+      [params.bookingId]
+    );
+    const ownsByAccount =
+      params.participantId !== undefined &&
+      bkRow?.participant_id != null &&
+      Number(bkRow.participant_id) === params.participantId;
+    if (!ownsByAccount && existing.noWhatsapp !== normalized) {
       throw new ServiceError('Nomor WhatsApp tidak cocok dengan pemesan.', 403);
     }
     if (existing.status !== 'aktif') {
@@ -1133,4 +1182,249 @@ export async function getDashboardSummary(db: DbClient): Promise<DashboardSummar
     buses: busSummaries,
     recentBookings,
   };
+}
+
+// ---------------- PARTICIPANT AUTH & REGISTERED PHONES ----------------
+
+export async function isPhoneRegistered(db: DbClient, normalizedWa: string): Promise<boolean> {
+  if (!normalizedWa) return false;
+  const row = await db.queryOne('SELECT 1 FROM registered_phones WHERE no_whatsapp = ?', [normalizedWa]);
+  return Boolean(row);
+}
+
+export async function getParticipantById(
+  db: DbClient,
+  participantId: number
+): Promise<ParticipantUser | null> {
+  const row = await db.queryOne<Record<string, unknown>>(
+    'SELECT id, email, nama, no_whatsapp, created_at FROM participants WHERE id = ?',
+    [participantId]
+  );
+  if (!row) return null;
+  const wa = String(row.no_whatsapp ?? '');
+  const registered = wa ? await isPhoneRegistered(db, wa) : false;
+  return {
+    id: Number(row.id),
+    email: String(row.email),
+    nama: String(row.nama ?? ''),
+    noWhatsapp: wa,
+    isPhoneRegistered: registered,
+    createdAt: String(row.created_at),
+  };
+}
+
+export async function assertParticipantCanBook(
+  db: DbClient,
+  participantId: number
+): Promise<ParticipantUser> {
+  const participant = await getParticipantById(db, participantId);
+  if (!participant) {
+    throw new ServiceError('Akun peserta tidak ditemukan. Silakan login kembali.', 401);
+  }
+  if (!participant.noWhatsapp) {
+    throw new ServiceError(
+      'Silakan lengkapi nomor WhatsApp Anda di profil akun sebelum memilih kursi.',
+      403
+    );
+  }
+  if (!participant.isPhoneRegistered) {
+    throw new ServiceError(
+      'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Anda tetap dapat login dengan email, namun belum dapat memesan kursi sampai nomor Anda didaftarkan admin.',
+      403
+    );
+  }
+  return participant;
+}
+
+export async function registerParticipant(
+  db: DbClient,
+  params: { email: string; nama: string; noWhatsapp?: string }
+): Promise<ParticipantUser> {
+  const email = params.email.trim().toLowerCase();
+  if (email !== 'tes' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new ServiceError('Format email tidak valid.', 400);
+  }
+  const nama = params.nama.trim();
+  if (nama.length < 2) {
+    throw new ServiceError('Nama lengkap wajib diisi (minimal 2 karakter).', 400);
+  }
+
+  let normalizedWa = '';
+  if (params.noWhatsapp && params.noWhatsapp.trim()) {
+    normalizedWa = normalizeWhatsApp(params.noWhatsapp);
+    if (!isValidWhatsApp(normalizedWa)) {
+      throw new ServiceError(
+        'Format nomor WhatsApp tidak valid. Gunakan format Indonesia (mis. 081234567890).',
+        400
+      );
+    }
+  }
+
+  const existing = await db.queryOne('SELECT id FROM participants WHERE LOWER(email) = ?', [email]);
+  if (existing) {
+    throw new ServiceError('Email ini sudah terdaftar. Silakan masuk melalui tab Login.', 409);
+  }
+
+  const newId = await db.insertReturningId(
+    'INSERT INTO participants (email, nama, no_whatsapp) VALUES (?, ?, ?)',
+    [email, nama, normalizedWa]
+  );
+
+  return (await getParticipantById(db, newId))!;
+}
+
+export async function loginParticipantByEmail(
+  db: DbClient,
+  rawEmail: string
+): Promise<ParticipantUser> {
+  const email = rawEmail.trim().toLowerCase();
+  if (email !== 'tes' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new ServiceError('Format email tidak valid.', 400);
+  }
+  const row = await db.queryOne<{ id: number }>(
+    'SELECT id FROM participants WHERE LOWER(email) = ?',
+    [email]
+  );
+  if (!row) {
+    throw new ServiceError('Email belum terdaftar. Silakan daftar (Register) terlebih dahulu.', 404);
+  }
+  return (await getParticipantById(db, Number(row.id)))!;
+}
+
+export async function updateParticipantProfile(
+  db: DbClient,
+  participantId: number,
+  params: { nama?: string; noWhatsapp?: string }
+): Promise<ParticipantUser> {
+  const current = await getParticipantById(db, participantId);
+  if (!current) throw new ServiceError('Akun tidak ditemukan.', 404);
+
+  const nextNama = params.nama !== undefined ? params.nama.trim() : current.nama;
+  if (nextNama.length < 2) {
+    throw new ServiceError('Nama lengkap minimal 2 karakter.', 400);
+  }
+
+  let nextWa = current.noWhatsapp;
+  if (params.noWhatsapp !== undefined) {
+    const trimmed = params.noWhatsapp.trim();
+    if (!trimmed) {
+      nextWa = '';
+    } else {
+      nextWa = normalizeWhatsApp(trimmed);
+      if (!isValidWhatsApp(nextWa)) {
+        throw new ServiceError('Format nomor WhatsApp tidak valid (contoh: 081234567890).', 400);
+      }
+    }
+  }
+
+  await db.execute('UPDATE participants SET nama = ?, no_whatsapp = ? WHERE id = ?', [
+    nextNama,
+    nextWa,
+    participantId,
+  ]);
+  return (await getParticipantById(db, participantId))!;
+}
+
+export async function getMyBookings(
+  db: DbClient,
+  participantId: number
+): Promise<BookingDetail[]> {
+  const participant = await getParticipantById(db, participantId);
+  if (!participant) return [];
+
+  const rows =
+    participant.noWhatsapp && participant.isPhoneRegistered
+      ? await db.queryAll<{ id: number }>(
+          `SELECT id FROM bookings
+           WHERE participant_id = ? OR no_whatsapp = ?
+           ORDER BY CASE WHEN status = 'aktif' THEN 0 ELSE 1 END ASC, id DESC`,
+          [participant.id, participant.noWhatsapp]
+        )
+      : await db.queryAll<{ id: number }>(
+          `SELECT id FROM bookings
+           WHERE participant_id = ?
+           ORDER BY CASE WHEN status = 'aktif' THEN 0 ELSE 1 END ASC, id DESC`,
+          [participant.id]
+        );
+
+  const out: BookingDetail[] = [];
+  for (const r of rows) {
+    const detail = await getBookingDetailById(db, Number(r.id));
+    if (detail) out.push(detail);
+  }
+  return out;
+}
+
+export async function listRegisteredPhones(db: DbClient): Promise<RegisteredPhone[]> {
+  const rows = await db.queryAll<Record<string, unknown>>(
+    `SELECT rp.id, rp.no_whatsapp, rp.catatan, rp.created_at,
+      EXISTS(
+        SELECT 1 FROM bookings b WHERE b.no_whatsapp = rp.no_whatsapp AND b.status = 'aktif'
+      ) AS has_active
+     FROM registered_phones rp
+     ORDER BY rp.id DESC`
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    noWhatsapp: String(r.no_whatsapp),
+    catatan: String(r.catatan ?? ''),
+    hasActiveBooking: Boolean(r.has_active && Number(r.has_active) !== 0),
+    createdAt: String(r.created_at),
+  }));
+}
+
+export async function addRegisteredPhonesBulk(
+  db: DbClient,
+  admin: AdminSessionPayload,
+  entries: Array<{ noWhatsapp: string; catatan?: string }>
+): Promise<{ added: number; invalid: string[] }> {
+  let added = 0;
+  const invalid: string[] = [];
+
+  await db.withTransaction(async (tx) => {
+    for (const entry of entries) {
+      const raw = entry.noWhatsapp.trim();
+      if (!raw) continue;
+      const norm = normalizeWhatsApp(raw);
+      if (!isValidWhatsApp(norm)) {
+        invalid.push(raw);
+        continue;
+      }
+      const note = (entry.catatan ?? '').trim();
+      await tx.execute(
+        `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
+         VALUES (?, ?, ?)
+         ON CONFLICT(no_whatsapp) DO UPDATE SET
+           catatan = CASE WHEN excluded.catatan != '' THEN excluded.catatan ELSE registered_phones.catatan END`,
+        [norm, note, admin.id]
+      );
+      added++;
+    }
+
+    if (added > 0) {
+      await writeAuditLog(
+        tx,
+        admin,
+        'ADD_REGISTERED_PHONES',
+        `${added} Nomor WA`,
+        `Menambahkan/memperbarui ${added} nomor WhatsApp peserta terdaftar`
+      );
+    }
+  });
+
+  return { added, invalid };
+}
+
+export async function deleteRegisteredPhone(
+  db: DbClient,
+  admin: AdminSessionPayload,
+  id: number
+) {
+  const row = await db.queryOne<{ no_whatsapp: string }>(
+    'SELECT no_whatsapp FROM registered_phones WHERE id = ?',
+    [id]
+  );
+  if (!row) throw new ServiceError('Nomor terdaftar tidak ditemukan.', 404);
+  await db.execute('DELETE FROM registered_phones WHERE id = ?', [id]);
+  await writeAuditLog(db, admin, 'DELETE_REGISTERED_PHONE', row.no_whatsapp, 'Dihapus dari daftar nomor');
 }

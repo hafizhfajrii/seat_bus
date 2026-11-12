@@ -217,10 +217,38 @@ async function initSchema(db: DbClient) {
       detail TEXT NOT NULL DEFAULT '',
       waktu TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
+    `CREATE TABLE IF NOT EXISTS participants (
+      id ${pk},
+      email TEXT NOT NULL UNIQUE,
+      nama TEXT NOT NULL DEFAULT '',
+      no_whatsapp TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS registered_phones (
+      id ${pk},
+      no_whatsapp TEXT NOT NULL UNIQUE,
+      catatan TEXT NOT NULL DEFAULT '',
+      dibuat_oleh INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
   ];
 
   for (const sql of statements) {
     await db.execute(sql);
+  }
+
+  // Safely add participant_id column to bookings for existing databases
+  if (isPg) {
+    await db.execute(
+      'ALTER TABLE bookings ADD COLUMN IF NOT EXISTS participant_id INTEGER REFERENCES participants(id) ON DELETE SET NULL'
+    );
+  } else {
+    const cols = await db.queryAll<{ name: string }>('PRAGMA table_info(bookings)');
+    if (!cols.some((c) => c.name === 'participant_id')) {
+      await db.execute(
+        'ALTER TABLE bookings ADD COLUMN participant_id INTEGER REFERENCES participants(id) ON DELETE SET NULL'
+      );
+    }
   }
 }
 
@@ -256,6 +284,26 @@ async function seedDatabase(db: DbClient) {
       ]
     );
   }
+
+  const testAdmin = await db.queryOne("SELECT id FROM admins WHERE LOWER(email) = 'admin'");
+  if (!testAdmin) {
+    await db.execute(
+      'INSERT INTO admins (nama, email, password_hash, role) VALUES (?, ?, ?, ?)',
+      ['Admin Testing', 'admin', hashPassword('123'), 'super_admin']
+    );
+  }
+
+  const testParticipant = await db.queryOne("SELECT id FROM participants WHERE LOWER(email) = 'tes'");
+  if (!testParticipant) {
+    await db.execute(
+      "INSERT INTO participants (email, nama, no_whatsapp) VALUES ('tes', 'Peserta Testing', '6281234567890')"
+    );
+  }
+  await db.execute(
+    `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
+     VALUES ('6281234567890', 'Nomor Testing (tes)', 1)
+     ON CONFLICT(no_whatsapp) DO NOTHING`
+  );
 
   const eventRow = await db.queryOne<{ c: number | string }>('SELECT COUNT(*) as c FROM events');
   if (Number(eventRow?.c ?? 0) === 0) {
@@ -336,6 +384,17 @@ async function seedDatabase(db: DbClient) {
     await db.execute(
       `INSERT INTO audit_logs (admin_id, admin_nama, aksi, objek, detail)
        VALUES (1, 'Sistem', 'INIT_EVENT', 'Event & Bus 1', 'Inisialisasi event awal beserta 38 kursi Bus 1')`
+    );
+
+    // Seed sample registered phone numbers matching sample bookings
+    await db.execute(
+      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh) VALUES ('6281388991234', 'Ahmad Fauzi (Contoh)', 1)`
+    );
+    await db.execute(
+      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh) VALUES ('6281299001122', 'Aisyah Putri (Contoh)', 1)`
+    );
+    await db.execute(
+      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh) VALUES ('6285711223344', 'Rahmat & Nur Aini (Contoh)', 1)`
     );
   }
 }

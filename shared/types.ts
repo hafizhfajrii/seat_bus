@@ -132,6 +132,23 @@ export interface AdminUser {
   createdAt: string;
 }
 
+export interface ParticipantUser {
+  id: number;
+  email: string;
+  nama: string;
+  noWhatsapp: string;
+  isPhoneRegistered: boolean;
+  createdAt: string;
+}
+
+export interface RegisteredPhone {
+  id: number;
+  noWhatsapp: string;
+  catatan: string;
+  hasActiveBooking: boolean;
+  createdAt: string;
+}
+
 export interface AuditLogEntry {
   id: number;
   adminId: number | null;

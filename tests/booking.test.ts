@@ -288,10 +288,10 @@ test('Seat hold blocks other sessions, cancellation releases both couple seats, 
 test('Admin override requires Super Admin + reason, and blocks/cancels work properly', async () => {
   const db = await createDatabase({ dbPath: ':memory:' });
   await db.execute(
-    "INSERT INTO admins (id, nama, email, password_hash, role) VALUES (2, 'Panitia', 'panitia-test@transit.id', 'hash', 'admin')"
+    "INSERT INTO admins (id, nama, email, password_hash, role) VALUES (99, 'Panitia', 'panitia-test@transit.id', 'hash', 'admin')"
   );
   const regularAdmin = {
-    id: 2,
+    id: 99,
     email: 'panitia-test@transit.id',
     nama: 'Panitia',
     role: 'admin' as const,

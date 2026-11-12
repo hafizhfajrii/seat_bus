@@ -5,23 +5,32 @@ import type {
   BusInfo,
   EventInfo,
   Gender,
+  ParticipantUser,
   PublicLookupBooking,
   PublicSeat,
 } from '../../shared/types';
 import {
+  formatWhatsAppDisplay,
   getValidCoupleOrientations,
   isValidWhatsApp,
   normalizeWhatsApp,
 } from '../../shared/seatRules';
 import { publicApi } from '../api';
+import { ThemeToggleButton, type ThemeMode } from '../theme';
 import { BusSeatMap, type SelectedSeatAssignment } from './BusSeatMap';
 import { TicketView } from './TicketView';
 
 interface ParticipantViewProps {
+  theme: ThemeMode;
+  onToggleTheme: () => void;
   onNavigateAdmin: () => void;
 }
 
-export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmin }) => {
+export const ParticipantView: React.FC<ParticipantViewProps> = ({
+  theme,
+  onToggleTheme,
+  onNavigateAdmin,
+}) => {
   const [event, setEvent] = useState<EventInfo | null>(null);
   const [buses, setBuses] = useState<BusInfo[]>([]);
   const [activeBusId, setActiveBusId] = useState<number | null>(null);
@@ -59,6 +68,18 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<PublicLookupBooking | null>(null);
 
+  // Participant Email Auth (No password)
+  const [participant, setParticipant] = useState<ParticipantUser | null>(null);
+  const [myBookings, setMyBookings] = useState<BookingDetail[]>([]);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authNama, setAuthNama] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [editingWa, setEditingWa] = useState(false);
+  const [profileWaInput, setProfileWaInput] = useState('');
+
   // Modals & Navigation
   const [activeTab, setActiveTab] = useState<'kursi' | 'jadwal' | 'tiket' | 'event'>('kursi');
   const [infoModal, setInfoModal] = useState<'jadwal' | 'event' | null>(null);
@@ -78,9 +99,29 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
     [buses]
   );
 
+  const loadParticipantSession = useCallback(async () => {
+    try {
+      const meRes = await publicApi.authMe();
+      setParticipant(meRes.participant);
+      if (meRes.participant) {
+        const mb = await publicApi.getMyBookings();
+        setMyBookings(mb.bookings);
+        setNamaPemesan((prev) => prev || meRes.participant!.nama);
+        if (meRes.participant.noWhatsapp) {
+          setNoWhatsapp(formatWhatsAppDisplay(meRes.participant.noWhatsapp));
+          setProfileWaInput(formatWhatsAppDisplay(meRes.participant.noWhatsapp));
+        }
+      } else {
+        setMyBookings([]);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const loadInitialData = useCallback(async (preferredBusId?: number) => {
     try {
-      const evData = await publicApi.getEvent();
+      const [evData] = await Promise.all([publicApi.getEvent(), loadParticipantSession()]);
       setEvent(evData.event);
       setBuses(evData.buses);
       const targetBusId =
@@ -101,7 +142,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadParticipantSession]);
 
   const refreshBusSeats = useCallback(async (busId: number) => {
     try {
@@ -244,6 +285,25 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
 
   const handleSelectSeat = async (seat: PublicSeat) => {
     setAlertBanner(null);
+    if (!participant) {
+      setAuthError(null);
+      setAuthTab('login');
+      setAuthModalOpen(true);
+      setAlertBanner({
+        type: 'info',
+        text: 'Silakan masuk atau daftar dengan Email terlebih dahulu untuk memilih & memesan kursi.',
+      });
+      return;
+    }
+    if (!participant.isPhoneRegistered) {
+      setAlertBanner({
+        type: 'error',
+        text: participant.noWhatsapp
+          ? `Nomor WhatsApp (${formatWhatsAppDisplay(participant.noWhatsapp)}) belum terdaftar oleh admin. Hubungi panitia agar nomor Anda didaftarkan sebelum memesan kursi.`
+          : 'Lengkapi nomor WhatsApp terdaftar Anda pada kartu Akun di atas sebelum memilih kursi.',
+      });
+      return;
+    }
     if (event?.statusPendaftaran !== 'buka') {
       setAlertBanner({ type: 'error', text: 'Maaf, pendaftaran kursi sedang ditutup oleh panitia.' });
       return;
@@ -328,6 +388,19 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
     setAlertBanner(null);
 
     if (!activeBus) return;
+    if (!participant) {
+      setAuthError(null);
+      setAuthTab('login');
+      setAuthModalOpen(true);
+      return;
+    }
+    if (!participant.isPhoneRegistered) {
+      setAlertBanner({
+        type: 'error',
+        text: 'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Anda belum bisa memesan kursi.',
+      });
+      return;
+    }
     if (event?.statusPendaftaran !== 'buka') {
       setAlertBanner({ type: 'error', text: 'Pendaftaran sedang ditutup.' });
       return;
@@ -364,7 +437,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
         setSelectedSeats([]);
         setHoldExpiresAt(null);
         setActiveTicket(res.booking);
-        await refreshBusSeats(activeBus.id);
+        await Promise.all([refreshBusSeats(activeBus.id), loadParticipantSession()]);
       } else {
         const normWa = normalizeWhatsApp(noWhatsapp);
         if (!isValidWhatsApp(normWa)) {
@@ -387,7 +460,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
         setSelectedSeats([]);
         setHoldExpiresAt(null);
         setActiveTicket(res.booking);
-        await refreshBusSeats(activeBus.id);
+        await Promise.all([refreshBusSeats(activeBus.id), loadParticipantSession()]);
       }
     } catch (err) {
       setAlertBanner({
@@ -457,7 +530,86 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
   const handleCancelFromTicket = async (booking: BookingDetail) => {
     const res = await publicApi.cancelBooking(booking.id, booking.noWhatsapp);
     setActiveTicket(res.booking);
-    if (activeBusId) await refreshBusSeats(activeBusId);
+    await Promise.all([
+      activeBusId ? refreshBusSeats(activeBusId) : Promise.resolve(),
+      loadParticipantSession(),
+    ]);
+  };
+
+  const handleAuthLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const res = await publicApi.authLogin(authEmail);
+      setParticipant(res.participant);
+      setAuthModalOpen(false);
+      await loadParticipantSession();
+      setAlertBanner({
+        type: res.participant.isPhoneRegistered ? 'success' : 'info',
+        text: res.participant.isPhoneRegistered
+          ? `Selamat datang, ${res.participant.nama}! Nomor WhatsApp Anda terverifikasi dan siap memesan kursi.`
+          : `Berhasil login sebagai ${res.participant.email}. Catatan: Nomor WhatsApp Anda belum terdaftar oleh admin sehingga belum bisa memesan kursi.`,
+      });
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Gagal masuk.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleAuthRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const res = await publicApi.authRegister({
+        email: authEmail,
+        nama: authNama,
+      });
+      setParticipant(res.participant);
+      setAuthModalOpen(false);
+      await loadParticipantSession();
+      setAlertBanner({
+        type: 'info',
+        text: `Pendaftaran berhasil untuk ${res.participant.email}! Silakan masukkan Nomor WhatsApp Anda di kartu akun untuk verifikasi sebelum memesan kursi.`,
+      });
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Gagal mendaftar.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleAuthLogout = async () => {
+    await clearSelection();
+    await publicApi.authLogout();
+    setParticipant(null);
+    setMyBookings([]);
+    setNamaPemesan('');
+    setNoWhatsapp('');
+    setAlertBanner({ type: 'info', text: 'Anda telah keluar. Sekarang berada dalam mode tamu.' });
+  };
+
+  const handleSaveProfileWa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await publicApi.authUpdateProfile({ noWhatsapp: profileWaInput });
+      setParticipant(res.participant);
+      setEditingWa(false);
+      await loadParticipantSession();
+      setAlertBanner({
+        type: res.participant.isPhoneRegistered ? 'success' : 'info',
+        text: res.participant.isPhoneRegistered
+          ? 'Nomor WhatsApp terverifikasi terdaftar oleh admin! Anda sekarang dapat memesan kursi.'
+          : 'Nomor WhatsApp disimpan, namun belum terdaftar di daftar panitia/admin.',
+      });
+    } catch (err) {
+      setAlertBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Gagal menyimpan nomor WhatsApp.',
+      });
+    }
   };
 
   const handleConfirmLookupCancel = async () => {
@@ -503,6 +655,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
       <TicketView
         booking={activeTicket}
         event={event}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
         onBack={() => setActiveTicket(null)}
         onStartChangeSeat={(b) => handleStartChangeSeat(b)}
         onCancelBooking={handleCancelFromTicket}
@@ -513,19 +667,23 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
   const registrationClosed = event.statusPendaftaran !== 'buka';
 
   return (
-    <div className="min-h-screen bg-slate-50/70 flex flex-col">
+    <div className="min-h-screen bg-slate-50/70 dark:bg-slate-950 flex flex-col">
       {/* Fixed Header */}
-      <header className="fixed top-0 w-full z-40 bg-white/90 backdrop-blur-md border-b border-slate-200/80 shadow-sm">
+      <header className="fixed top-0 w-full z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 shadow-sm">
         <div className="h-18 px-4 max-w-lg mx-auto flex items-center justify-between gap-2">
           <div className="flex flex-col justify-center min-w-0">
             <div className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-blue-600 text-[18px]">directions_bus</span>
-              <span className="text-[11px] uppercase tracking-wider text-blue-600 font-bold">
+              <span className="material-symbols-outlined text-blue-600 dark:text-blue-400 text-[18px]">
+                directions_bus
+              </span>
+              <span className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold">
                 TRANSIT EVENT
               </span>
             </div>
-            <h1 className="text-base text-slate-900 leading-tight font-bold truncate">Pemesanan Kursi</h1>
-            <div className="flex items-center gap-1 mt-0.5 text-[11px] text-slate-500 truncate">
+            <h1 className="text-base text-slate-900 dark:text-white leading-tight font-bold truncate">
+              Pemesanan Kursi
+            </h1>
+            <div className="flex items-center gap-1 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
               <span className="material-symbols-outlined text-slate-400 text-[13px]">event</span>
               <span className="truncate">
                 {event.tanggal} • {event.lokasiBerangkat}
@@ -534,11 +692,37 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {participant ? (
+              <button
+                type="button"
+                onClick={handleAuthLogout}
+                title={`Keluar (${participant.email})`}
+                className="inline-flex items-center gap-1 px-2.5 h-9 rounded-full bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 text-xs font-bold transition-colors max-w-[130px]"
+              >
+                <span className="material-symbols-outlined text-[16px] shrink-0">account_circle</span>
+                <span className="truncate">{participant.nama.split(' ')[0]}</span>
+                <span className="material-symbols-outlined text-[14px] shrink-0">logout</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthTab('login');
+                  setAuthModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1 px-3 h-9 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">login</span>
+                <span>Masuk</span>
+              </button>
+            )}
+            <ThemeToggleButton theme={theme} onToggle={onToggleTheme} compact />
             <button
               type="button"
               onClick={() => setInfoModal('event')}
               title="Info Event"
-              className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
               <span className="material-symbols-outlined text-[21px]">info</span>
             </button>
@@ -546,10 +730,9 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
               type="button"
               onClick={onNavigateAdmin}
               title="Portal Admin / Panitia"
-              className="inline-flex items-center gap-1 px-2.5 h-9 rounded-full bg-slate-100 hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-700 text-xs font-bold transition-colors"
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:text-blue-700 transition-colors"
             >
-              <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
-              <span>Admin</span>
+              <span className="material-symbols-outlined text-[18px]">admin_panel_settings</span>
             </button>
           </div>
         </div>
@@ -637,6 +820,118 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
             </div>
           </div>
         </section>
+
+        {/* 1B. Status Akun Peserta / Mode Tamu */}
+        {!participant ? (
+          <section className="w-full bg-blue-50/80 border border-blue-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <span className="material-symbols-outlined text-blue-600 text-[20px] shrink-0 mt-0.5">
+                mail
+              </span>
+              <div className="text-xs leading-relaxed">
+                <div className="font-bold text-blue-950">Mode Tamu (Lihat Denah)</div>
+                <p className="text-slate-600 mt-0.5">
+                  Masuk atau daftar dengan <strong>Email</strong> (tanpa password) untuk memesan kursi dan
+                  melihat E-Tiket Anda.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthError(null);
+                setAuthTab('login');
+                setAuthModalOpen(true);
+              }}
+              className="shrink-0 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs"
+            >
+              Masuk / Daftar
+            </button>
+          </section>
+        ) : (
+          <section
+            className={`w-full rounded-2xl p-3.5 border shadow-xs space-y-2.5 ${
+              participant.isPhoneRegistered
+                ? 'bg-emerald-50/70 border-emerald-200'
+                : 'bg-amber-50/80 border-amber-200'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-extrabold text-slate-900 truncate">
+                    {participant.nama}
+                  </span>
+                  {participant.isPhoneRegistered ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                      <span className="material-symbols-outlined text-[12px]">verified</span>
+                      Nomor Terdaftar • Siap Pesan
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold">
+                      <span className="material-symbols-outlined text-[12px]">block</span>
+                      Nomor Belum Terdaftar Admin
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-600 mt-0.5 truncate">
+                  {participant.email} • WA:{' '}
+                  <strong className="font-mono">
+                    {participant.noWhatsapp ? formatWhatsAppDisplay(participant.noWhatsapp) : 'Belum diisi'}
+                  </strong>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileWaInput(
+                    participant.noWhatsapp ? formatWhatsAppDisplay(participant.noWhatsapp) : ''
+                  );
+                  setEditingWa((v) => !v);
+                }}
+                className="shrink-0 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
+              >
+                {editingWa ? 'Tutup' : 'Ubah WA'}
+              </button>
+            </div>
+
+            {!participant.isPhoneRegistered && (
+              <p className="text-[11px] text-amber-900 leading-relaxed">
+                {participant.noWhatsapp ? (
+                  <>
+                    Anda berhasil login dengan email, namun{' '}
+                    <strong>nomor WhatsApp Anda belum didaftarkan oleh panitia/admin</strong> sehingga
+                    belum bisa memesan kursi. Hubungi admin untuk mendaftarkan nomor Anda.
+                  </>
+                ) : (
+                  <>
+                    Akun email aktif. Masukkan <strong>Nomor WhatsApp</strong> Anda yang sudah
+                    didaftarkan panitia/admin untuk verifikasi sebelum memilih kursi:
+                  </>
+                )}
+              </p>
+            )}
+
+            {(editingWa || !participant.isPhoneRegistered) && (
+              <form onSubmit={handleSaveProfileWa} className="flex gap-2 pt-1">
+                <input
+                  type="tel"
+                  required
+                  value={profileWaInput}
+                  onChange={(e) => setProfileWaInput(e.target.value)}
+                  placeholder="Masukkan No. WA (cth. 081234567890)"
+                  className="flex-1 h-9 px-3 rounded-xl bg-white border border-slate-300 text-xs"
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0"
+                >
+                  Verifikasi Nomor
+                </button>
+              </form>
+            )}
+          </section>
+        )}
 
         {/* 2. Mode Switcher & Bus Selector */}
         <section className="flex flex-col gap-4">
@@ -1011,37 +1306,56 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs text-slate-700 font-semibold" htmlFor="whatsapp">
-                Nomor WhatsApp Aktif
+                Nomor WhatsApp Terdaftar
               </label>
               <input
                 id="whatsapp"
                 type="tel"
                 required
-                disabled={Boolean(changeSeatBooking)}
+                disabled={Boolean(changeSeatBooking) || Boolean(participant?.noWhatsapp)}
                 value={noWhatsapp}
                 onChange={(e) => setNoWhatsapp(e.target.value)}
                 placeholder="0812-XXXX-XXXX"
                 className="w-full h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white disabled:opacity-70"
               />
               <span className="text-[11px] text-slate-500">
-                Digunakan untuk cek E-Tiket atau pembatalan kursi (maks. {event.batasPesananPerWa} pesanan aktif)
+                {participant?.noWhatsapp
+                  ? 'Terhubung dengan akun email Anda (maks. ' + event.batasPesananPerWa + ' pesanan aktif).'
+                  : 'Nomor WhatsApp harus sudah didaftarkan oleh panitia/admin.'}
               </span>
             </div>
 
-            <button
-              type="submit"
-              disabled={submitting || registrationClosed}
-              className="w-full h-12 mt-1 rounded-xl bg-blue-600 text-white text-sm font-bold shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span>
-                {submitting
-                  ? 'Memproses...'
-                  : changeSeatBooking
-                  ? 'Simpan Perubahan Kursi'
-                  : 'Pesan Seat'}
-              </span>
-              <span className="material-symbols-outlined text-[20px]">arrow_forward</span>
-            </button>
+            {!participant ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthTab('login');
+                  setAuthModalOpen(true);
+                }}
+                className="w-full h-12 mt-1 rounded-xl bg-blue-600 text-white text-sm font-bold shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[20px]">login</span>
+                <span>Masuk / Daftar Email untuk Pesan</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={submitting || registrationClosed || !participant.isPhoneRegistered}
+                className="w-full h-12 mt-1 rounded-xl bg-blue-600 text-white text-sm font-bold shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span>
+                  {submitting
+                    ? 'Memproses...'
+                    : !participant.isPhoneRegistered
+                    ? 'Nomor Belum Terdaftar Admin'
+                    : changeSeatBooking
+                    ? 'Simpan Perubahan Kursi'
+                    : 'Pesan Seat'}
+                </span>
+                <span className="material-symbols-outlined text-[20px]">arrow_forward</span>
+              </button>
+            )}
 
             <div className="flex items-center justify-center gap-1.5 text-center mt-0.5">
               <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
@@ -1052,38 +1366,131 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
           </form>
         </section>
 
-        {/* 6. Check / Cancel Booking Card */}
+        {/* 6. Tiket Saya (via Login Email) & Cek Pesanan */}
         <section
           ref={lookupSectionRef}
           className="p-4 bg-white border border-slate-200/80 rounded-2xl flex flex-col gap-3 shadow-sm scroll-mt-20"
         >
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-blue-600 text-[20px]">search</span>
-            <h4 className="text-sm font-bold text-slate-900">
-              Sudah pernah pesan? Cek atau Batalkan Kursi
-            </h4>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-blue-600 text-[20px]">confirmation_number</span>
+              <h4 className="text-sm font-bold text-slate-900">Tiket Saya</h4>
+            </div>
+            {participant && (
+              <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[180px]">
+                {participant.email}
+              </span>
+            )}
           </div>
-          <p className="text-xs text-slate-500">
-            Masukkan nomor WhatsApp yang dipakai saat memesan untuk melihat E-Tiket, ubah kursi, atau
-            membatalkan pesanan.
-          </p>
-          <form onSubmit={handleLookupSearch} className="flex gap-2">
-            <input
-              ref={lookupInputRef}
-              type="tel"
-              value={lookupWa}
-              onChange={(e) => setLookupWa(e.target.value)}
-              placeholder="0812-XXXX-XXXX"
-              className="flex-1 h-10 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white"
-            />
-            <button
-              type="submit"
-              disabled={lookupLoading}
-              className="px-4 h-10 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 text-xs font-bold transition-colors shrink-0 disabled:opacity-60"
-            >
-              {lookupLoading ? 'Mencari...' : 'Cari Pesanan'}
-            </button>
-          </form>
+
+          {!participant ? (
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2.5 text-center">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Masuk dengan akun <strong>Email</strong> Anda (tanpa password) untuk langsung melihat E-Tiket,
+                mengubah kursi, atau membatalkan pesanan.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthTab('login');
+                  setAuthModalOpen(true);
+                }}
+                className="mx-auto px-4 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[16px]">mail</span>
+                <span>Masuk dengan Email</span>
+              </button>
+            </div>
+          ) : myBookings.length === 0 ? (
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 text-center">
+              Belum ada pemesanan kursi untuk akun <strong>{participant.email}</strong>.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {myBookings.map((bk) => (
+                <div
+                  key={bk.id}
+                  className={`p-3 rounded-xl border flex flex-col gap-2.5 ${
+                    bk.status === 'aktif'
+                      ? 'bg-slate-50 border-slate-200'
+                      : 'bg-slate-50/50 border-slate-200 opacity-65'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-mono text-xs font-bold text-blue-700">{bk.kodeBooking}</span>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                          {bk.busNama}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            bk.status === 'aktif'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-rose-100 text-rose-700'
+                          }`}
+                        >
+                          {bk.status === 'aktif' ? 'Aktif' : 'Dibatalkan'}
+                        </span>
+                      </div>
+                      <p className="text-xs font-bold text-slate-900 mt-1">{bk.namaPemesan}</p>
+                      <p className="text-[11px] text-slate-500">
+                        {bk.mode === 'suami_istri' ? 'Suami & Istri' : 'Sendiri'} •{' '}
+                        {formatWhatsAppDisplay(bk.noWhatsapp)}
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 text-xs font-extrabold shrink-0">
+                      {bk.seats.map((s) => s.label).join(' & ')}
+                    </span>
+                  </div>
+
+                  {bk.status === 'aktif' && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTicket(bk)}
+                        className="flex-1 h-9 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+                      >
+                        Lihat E-Tiket
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleStartChangeSeat(bk)}
+                        className="px-3 h-9 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold"
+                      >
+                        Ubah
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Secondary WhatsApp Lookup */}
+          <details className="pt-2 border-t border-slate-100">
+            <summary className="text-xs font-semibold text-slate-500 hover:text-slate-800 cursor-pointer select-none">
+              Atau cari pesanan dengan Nomor WhatsApp
+            </summary>
+            <div className="mt-3 space-y-2.5">
+              <form onSubmit={handleLookupSearch} className="flex gap-2">
+                <input
+                  ref={lookupInputRef}
+                  type="tel"
+                  value={lookupWa}
+                  onChange={(e) => setLookupWa(e.target.value)}
+                  placeholder="0812-XXXX-XXXX"
+                  className="flex-1 h-10 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white"
+                />
+                <button
+                  type="submit"
+                  disabled={lookupLoading}
+                  className="px-4 h-10 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 text-xs font-bold transition-colors shrink-0 disabled:opacity-60"
+                >
+                  {lookupLoading ? 'Mencari...' : 'Cari'}
+                </button>
+              </form>
 
           {lookupError && (
             <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
@@ -1152,6 +1559,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
               )}
             </div>
           )}
+            </div>
+          </details>
         </section>
       </main>
 
@@ -1283,6 +1692,148 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({ onNavigateAdmi
                 Tutup
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Participant Login / Register Modal (Email Only, No Password) */}
+      {authModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600">
+                  Akun Peserta • Tanpa Password
+                </span>
+                <h3 className="text-base font-extrabold text-slate-900 mt-0.5">
+                  {authTab === 'login' ? 'Masuk dengan Email' : 'Daftar Akun Peserta'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-600"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl gap-1 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('login');
+                  setAuthError(null);
+                }}
+                className={`py-2 rounded-lg font-bold transition-all ${
+                  authTab === 'login' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Masuk (Login)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('register');
+                  setAuthError(null);
+                }}
+                className={`py-2 rounded-lg font-bold transition-all ${
+                  authTab === 'register' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Daftar (Register)
+              </button>
+            </div>
+
+            {authTab === 'login' ? (
+              <form onSubmit={handleAuthLogin} className="space-y-3 text-xs">
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700" htmlFor="auth-login-email">
+                    Alamat Email
+                  </label>
+                  <input
+                    id="auth-login-email"
+                    type="text"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="tes atau nama@email.com"
+                    className="w-full h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
+                  />
+                </div>
+                {authError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 space-y-1">
+                    <div>{authError}</div>
+                    {authError.includes('belum terdaftar') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthTab('register');
+                          setAuthError(null);
+                        }}
+                        className="font-bold underline text-blue-700"
+                      >
+                        Daftar sekarang dengan email ini →
+                      </button>
+                    )}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm disabled:opacity-60"
+                >
+                  {authLoading ? 'Memproses...' : 'Masuk Sekarang'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleAuthRegister} className="space-y-3 text-xs">
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700" htmlFor="auth-reg-email">
+                    Alamat Email <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    id="auth-reg-email"
+                    type="text"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="nama@email.com"
+                    className="w-full h-10 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700" htmlFor="auth-reg-nama">
+                    Nama Lengkap <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    id="auth-reg-nama"
+                    type="text"
+                    required
+                    value={authNama}
+                    onChange={(e) => setAuthNama(e.target.value)}
+                    placeholder="cth. Siti Fatimah"
+                    className="w-full h-10 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Daftar cukup dengan Email &amp; Nama (tanpa password). Verifikasi nomor WhatsApp terdaftar
+                  dilakukan setelah masuk.
+                </p>
+                {authError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700">
+                    {authError}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm disabled:opacity-60"
+                >
+                  {authLoading ? 'Mendaftar...' : 'Daftar & Masuk'}
+                </button>
+              </form>
+            )}
           </div>
         </div>
       )}

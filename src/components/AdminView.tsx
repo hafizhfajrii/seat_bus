@@ -11,16 +11,20 @@ import type {
   DashboardSummary,
   EventInfo,
   Gender,
+  RegisteredPhone,
 } from '../../shared/types';
 import { formatWhatsAppDisplay } from '../../shared/seatRules';
 import { adminApi } from '../api';
+import { ThemeToggleButton, type ThemeMode } from '../theme';
 import { BusSeatMap } from './BusSeatMap';
 
 interface AdminViewProps {
+  theme: ThemeMode;
+  onToggleTheme: () => void;
   onNavigateParticipant: () => void;
 }
 
-type AdminSection = 'dashboard' | 'denah' | 'manifest' | 'settings' | 'audit';
+type AdminSection = 'dashboard' | 'denah' | 'manifest' | 'phones' | 'settings' | 'audit';
 
 interface CurrentAdmin {
   id: number;
@@ -29,7 +33,11 @@ interface CurrentAdmin {
   role: AdminRole;
 }
 
-export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) => {
+export const AdminView: React.FC<AdminViewProps> = ({
+  theme,
+  onToggleTheme,
+  onNavigateParticipant,
+}) => {
   const [authChecked, setAuthChecked] = useState(false);
   const [currentAdmin, setCurrentAdmin] = useState<CurrentAdmin | null>(null);
 
@@ -93,6 +101,13 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
   const [newUserPass, setNewUserPass] = useState('');
   const [newUserRole, setNewUserRole] = useState<AdminRole>('admin');
 
+  // Registered participant WhatsApp whitelist
+  const [registeredPhones, setRegisteredPhones] = useState<RegisteredPhone[]>([]);
+  const [singlePhoneInput, setSinglePhoneInput] = useState('');
+  const [singlePhoneNote, setSinglePhoneNote] = useState('');
+  const [bulkPhoneText, setBulkPhoneText] = useState('');
+  const [phoneSearch, setPhoneSearch] = useState('');
+
   const notify = (type: 'error' | 'success', text: string) => {
     setToast({ type, text });
     setTimeout(() => setToast(null), 5000);
@@ -101,10 +116,11 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
   const loadAdminData = useCallback(
     async (preferredBusId?: number) => {
       try {
-        const [dash, bks, logs] = await Promise.all([
+        const [dash, bks, logs, phs] = await Promise.all([
           adminApi.getDashboard(),
           adminApi.listBookings(),
           adminApi.getAuditLogs(),
+          adminApi.listPhones(),
         ]);
         setEvent(dash.event);
         setEventDraft(dash.event);
@@ -112,6 +128,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
         setBuses(dash.buses);
         setBookings(bks.bookings);
         setAuditLogs(logs.logs);
+        setRegisteredPhones(phs.phones);
 
         const targetBus =
           preferredBusId && dash.buses.some((b) => b.id === preferredBusId)
@@ -395,6 +412,119 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
     }
   };
 
+  const handleAddSinglePhone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await adminApi.addPhones([{ noWhatsapp: singlePhoneInput, catatan: singlePhoneNote }]);
+      if (res.invalid.length > 0) {
+        notify('error', `Nomor tidak valid: ${res.invalid.join(', ')}`);
+        return;
+      }
+      setSinglePhoneInput('');
+      setSinglePhoneNote('');
+      notify('success', 'Nomor WhatsApp berhasil didaftarkan.');
+      await loadAdminData(activeBusId ?? undefined);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Gagal mendaftarkan nomor.');
+    }
+  };
+
+  const parseBulkPhoneEntries = useCallback((rawText: string) => {
+    const entries: Array<{ noWhatsapp: string; catatan?: string }> = [];
+    const lines = rawText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const looksLikePhone = (str: string) => {
+      const digits = str.replace(/\D/g, '');
+      return digits.length >= 9 && digits.length <= 15 && !/[a-zA-Z]{2,}/.test(str);
+    };
+
+    for (const line of lines) {
+      const parts = line
+        .split(/[,;\t|]+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length === 0) continue;
+
+      // Case 1: Multiple phone numbers on the same line (e.g. "0812..., 0856..., 0813...")
+      if (parts.length >= 2 && parts.every(looksLikePhone)) {
+        for (const p of parts) {
+          entries.push({ noWhatsapp: p, catatan: '' });
+        }
+        continue;
+      }
+
+      // Case 2: Phone + Name/Note in either order (e.g. Excel 2 columns)
+      const phoneIdx = parts.findIndex(looksLikePhone);
+      if (phoneIdx !== -1) {
+        const phone = parts[phoneIdx];
+        const note = parts.filter((_, idx) => idx !== phoneIdx).join(' ').trim();
+        entries.push({ noWhatsapp: phone, catatan: note });
+      } else {
+        entries.push({ noWhatsapp: parts[0], catatan: parts.slice(1).join(' ').trim() });
+      }
+    }
+    return entries;
+  }, []);
+
+  const parsedBulkPreview = useMemo(
+    () => parseBulkPhoneEntries(bulkPhoneText),
+    [bulkPhoneText, parseBulkPhoneEntries]
+  );
+
+  const handleBulkPhones = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (parsedBulkPreview.length === 0) return;
+
+    try {
+      const res = await adminApi.addPhones(parsedBulkPreview);
+      setBulkPhoneText('');
+      if (res.invalid.length > 0) {
+        notify(
+          'success',
+          `${res.added} nomor berhasil didaftarkan. ${res.invalid.length} baris dilewati karena format tidak valid (${res.invalid.slice(0, 3).join(', ')}).`
+        );
+      } else {
+        notify('success', `${res.added} nomor WhatsApp berhasil didaftarkan.`);
+      }
+      await loadAdminData(activeBusId ?? undefined);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Gagal import nomor.');
+    }
+  };
+
+  const handleBulkFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setBulkPhoneText((prev) => (prev ? `${prev}\n${text}` : text));
+    e.target.value = '';
+  };
+
+  const handleDeletePhone = async (id: number, phone: string) => {
+    if (!window.confirm(`Hapus nomor ${formatWhatsAppDisplay(phone)} dari daftar terdaftar?`)) return;
+    try {
+      await adminApi.deletePhone(id);
+      notify('success', 'Nomor dihapus dari daftar peserta terdaftar.');
+      await loadAdminData(activeBusId ?? undefined);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Gagal menghapus nomor.');
+    }
+  };
+
+  const filteredPhones = useMemo(() => {
+    const q = phoneSearch.trim().toLowerCase();
+    if (!q) return registeredPhones;
+    return registeredPhones.filter(
+      (p) =>
+        p.noWhatsapp.includes(q) ||
+        formatWhatsAppDisplay(p.noWhatsapp).includes(q) ||
+        p.catatan.toLowerCase().includes(q)
+    );
+  }, [registeredPhones, phoneSearch]);
+
   const filteredBookings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return bookings.filter((b) => {
@@ -477,14 +607,17 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
                 <h1 className="text-base font-extrabold text-slate-900 leading-tight">Login Panitia</h1>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={onNavigateParticipant}
-              className="text-xs font-semibold text-slate-500 hover:text-blue-600 flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-[16px]">arrow_back</span>
-              <span>Peserta</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <ThemeToggleButton theme={theme} onToggle={onToggleTheme} compact />
+              <button
+                type="button"
+                onClick={onNavigateParticipant}
+                className="text-xs font-semibold text-slate-500 hover:text-blue-600 flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+                <span>Peserta</span>
+              </button>
+            </div>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-3.5">
@@ -494,11 +627,11 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
               </label>
               <input
                 id="admin-email"
-                type="email"
+                type="text"
                 required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="nama@email.com"
+                placeholder="admin atau nama@email.com"
                 className="h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
               />
             </div>
@@ -541,6 +674,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
     { id: 'denah', label: 'Denah & Kursi', icon: 'airline_seat_recline_extra' },
     { id: 'manifest', label: 'Manifest', icon: 'assignment' },
+    { id: 'phones', label: 'Nomor Peserta', icon: 'contact_phone' },
     { id: 'settings', label: 'Event & Bus', icon: 'tune' },
     { id: 'audit', label: 'Akun & Log', icon: 'history' },
   ];
@@ -592,6 +726,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
             </span>
           </div>
           <div className="flex gap-2">
+            <ThemeToggleButton theme={theme} onToggle={onToggleTheme} compact />
             <button
               type="button"
               onClick={onNavigateParticipant}
@@ -629,13 +764,16 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
             </h1>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="px-2.5 py-1.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold"
-        >
-          Keluar
-        </button>
+        <div className="flex items-center gap-1.5">
+          <ThemeToggleButton theme={theme} onToggle={onToggleTheme} compact />
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="px-2.5 py-1.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold"
+          >
+            Keluar
+          </button>
+        </div>
       </header>
 
       {/* Mobile Bottom / Top Tabs */}
@@ -1412,6 +1550,161 @@ export const AdminView: React.FC<AdminViewProps> = ({ onNavigateParticipant }) =
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 3B: NOMOR PESERTA TERDAFTAR (WHITELIST WA) */}
+          {section === 'phones' && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Nomor WhatsApp Peserta Terdaftar</h2>
+                <p className="text-xs text-slate-500">
+                  Hanya peserta dengan nomor WhatsApp yang terdaftar di sini yang dapat memesan kursi setelah
+                  login dengan email.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                <form
+                  onSubmit={handleAddSinglePhone}
+                  className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs"
+                >
+                  <h3 className="text-sm font-bold text-slate-900">Tambah 1 Nomor</h3>
+                  <div className="space-y-2">
+                    <input
+                      type="tel"
+                      required
+                      value={singlePhoneInput}
+                      onChange={(e) => setSinglePhoneInput(e.target.value)}
+                      placeholder="No. WhatsApp (cth. 081234567890)"
+                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
+                    />
+                    <input
+                      type="text"
+                      value={singlePhoneNote}
+                      onChange={(e) => setSinglePhoneNote(e.target.value)}
+                      placeholder="Nama / Catatan (opsional)"
+                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                  >
+                    + Daftarkan Nomor
+                  </button>
+                </form>
+
+                <form
+                  onSubmit={handleBulkPhones}
+                  className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h3 className="text-sm font-bold text-slate-900">Masukkan Banyak Nomor Sekaligus</h3>
+                    <label className="cursor-pointer px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] inline-flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">upload_file</span>
+                      <span>Import CSV/TXT</span>
+                      <input
+                        type="file"
+                        accept=".csv,.txt"
+                        onChange={handleBulkFileUpload}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Bisa tempel langsung dari Excel/Sheets, pisahkan per baris atau koma. Format bebas:{' '}
+                    <code className="bg-slate-100 px-1 rounded">0812xxx</code>,{' '}
+                    <code className="bg-slate-100 px-1 rounded">0812xxx, Budi</code>, atau{' '}
+                    <code className="bg-slate-100 px-1 rounded">Budi, 0812xxx</code>.
+                  </p>
+                  <textarea
+                    rows={4}
+                    value={bulkPhoneText}
+                    onChange={(e) => setBulkPhoneText(e.target.value)}
+                    placeholder={'081234567890, Budi Santoso\n085611112222, Siti Aminah\n081399998888'}
+                    className="w-full p-3 rounded-xl bg-slate-50 border border-slate-300 font-mono text-xs"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-500">
+                      {parsedBulkPreview.length > 0
+                        ? `Terdeteksi ${parsedBulkPreview.length} baris/nomor siap ditambahkan`
+                        : 'Tempel daftar nomor di atas atau pilih file CSV/TXT'}
+                    </span>
+                    <button
+                      type="submit"
+                      disabled={parsedBulkPreview.length === 0}
+                      className="px-4 h-10 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold disabled:opacity-50"
+                    >
+                      Tambahkan Semua
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Daftar Nomor Terdaftar ({registeredPhones.length})
+                  </h3>
+                  <input
+                    type="text"
+                    value={phoneSearch}
+                    onChange={(e) => setPhoneSearch(e.target.value)}
+                    placeholder="Cari nomor atau nama..."
+                    className="h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 w-full sm:w-64"
+                  />
+                </div>
+
+                {filteredPhones.length === 0 ? (
+                  <div className="py-6 text-center text-slate-500">
+                    Belum ada nomor WhatsApp terdaftar yang cocok.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-500">
+                          <th className="py-2 pr-3">No. WhatsApp</th>
+                          <th className="py-2 pr-3">Nama / Catatan</th>
+                          <th className="py-2 pr-3">Status Pemesanan</th>
+                          <th className="py-2 text-right">Aksi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredPhones.map((p) => (
+                          <tr key={p.id}>
+                            <td className="py-2.5 pr-3 font-mono font-bold text-slate-900">
+                              {formatWhatsAppDisplay(p.noWhatsapp)}
+                            </td>
+                            <td className="py-2.5 pr-3 text-slate-700">{p.catatan || '-'}</td>
+                            <td className="py-2.5 pr-3">
+                              {p.hasActiveBooking ? (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                                  Sudah Pesan Kursi
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold text-[10px]">
+                                  Belum Pesan
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePhone(p.id, p.noWhatsapp)}
+                                className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px]"
+                              >
+                                Hapus
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           )}
