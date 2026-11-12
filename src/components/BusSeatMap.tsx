@@ -3,7 +3,6 @@ import type { AdminSeat, BookingMode, BusInfo, CoupleRole, Gender, PublicSeat } 
 import {
   canSeatStartCouplePick,
   getSeatEligibilityForSingle,
-  getSeatNeighborTags,
   getValidCoupleOrientations,
   LEG_REST_ROWS,
 } from '../../shared/seatRules';
@@ -104,12 +103,6 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
     const isIgnoredOldSeat = ignoreSeatLabels.includes(seat.label);
     const effectiveStatus = isIgnoredOldSeat && !picked ? 'tersedia' : seat.status;
 
-    const { hasAdjacentFemale, hasAdjacentMale } = getSeatNeighborTags(
-      seat,
-      seatsMap,
-      ignoreSeatLabels
-    );
-
     const isCouplePartnerCandidate =
       viewType === 'participant' &&
       mode === 'suami_istri' &&
@@ -143,12 +136,12 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
       const isFemale = seat.occupiedGender === 'P';
       if (isFemale) {
         containerClass =
-          'bg-rose-100 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 ' +
-          (viewType === 'participant' ? 'cursor-not-allowed' : 'hover:ring-2 hover:ring-rose-400 cursor-pointer');
+          'bg-pink-50 dark:bg-pink-950/60 border border-pink-300 dark:border-pink-800 text-pink-800 dark:text-pink-200 ' +
+          (viewType === 'participant' ? 'cursor-not-allowed' : 'hover:ring-2 hover:ring-pink-300 cursor-pointer');
       } else {
         containerClass =
-          'bg-sky-100 dark:bg-sky-950/80 border border-sky-300 dark:border-sky-700 text-sky-900 dark:text-sky-200 ' +
-          (viewType === 'participant' ? 'cursor-not-allowed' : 'hover:ring-2 hover:ring-blue-400 cursor-pointer');
+          'bg-sky-50 dark:bg-sky-950/70 border border-sky-300 dark:border-sky-700 text-sky-800 dark:text-sky-200 ' +
+          (viewType === 'participant' ? 'cursor-not-allowed' : 'hover:ring-2 hover:ring-sky-300 cursor-pointer');
       }
 
       if (seat.isCouple) {
@@ -156,7 +149,7 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
           <span className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
             <span
               className={`material-symbols-outlined text-[11px] ${
-                isFemale ? 'text-rose-600 dark:text-rose-400' : 'text-blue-600 dark:text-sky-400'
+                isFemale ? 'text-pink-500 dark:text-pink-300' : 'text-sky-500 dark:text-sky-300'
               }`}
               style={{ fontVariationSettings: "'FILL' 1" }}
             >
@@ -169,8 +162,8 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
           <span
             className={`absolute top-0.5 right-0.5 px-1 rounded text-[9px] font-extrabold leading-tight ${
               isFemale
-                ? 'bg-rose-200 dark:bg-rose-900 text-rose-900 dark:text-rose-100'
-                : 'bg-sky-200 dark:bg-sky-900 text-sky-900 dark:text-sky-100'
+                ? 'bg-pink-100 dark:bg-pink-900/80 text-pink-800 dark:text-pink-100'
+                : 'bg-sky-100 dark:bg-sky-900/80 text-sky-800 dark:text-sky-100'
             }`}
           >
             {seat.occupiedGender}
@@ -207,25 +200,6 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
       );
       subLabel = 'TAHAN';
       tooltip = `Kursi ${seat.label} sedang ditahan sementara oleh peserta lain`;
-    } else if (viewType === 'participant' && mode === 'sendiri' && gender === 'P' && hasAdjacentMale) {
-      containerClass =
-        'seat-hatch-male-blocked border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed';
-      topBadge = (
-        <span className="material-symbols-outlined text-[11px] absolute top-0.5 right-0.5 text-slate-400 dark:text-slate-500">
-          block
-        </span>
-      );
-      subLabel = 'BLOK L';
-      tooltip = `Kursi ${seat.label} bersebelahan dengan penumpang laki-laki`;
-    } else if (hasAdjacentFemale) {
-      const blockedForMale = viewType === 'participant' && mode === 'sendiri' && gender === 'L';
-      containerClass = blockedForMale
-        ? 'seat-hatch-female border-2 border-dashed border-rose-300 dark:border-rose-800 text-rose-500 dark:text-rose-300 opacity-85 cursor-not-allowed'
-        : 'seat-hatch-female border-2 border-dashed border-rose-400 dark:border-rose-500 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/50 active:scale-95 cursor-pointer';
-      subLabel = 'KHUSUS P';
-      tooltip = blockedForMale
-        ? `Kursi ${seat.label} khusus perempuan (bersebelahan dengan penumpang perempuan)`
-        : `Kursi ${seat.label} khusus penumpang perempuan`;
     } else if (isRear) {
       containerClass =
         'bg-indigo-50 dark:bg-indigo-950/75 border border-indigo-200 dark:border-indigo-700 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 text-indigo-900 dark:text-indigo-200 active:scale-95 cursor-pointer shadow-xs';
@@ -266,6 +240,25 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
     );
   };
 
+  const SteeringWheelIcon = () => (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="w-[18px] h-[18px] text-blue-600 dark:text-blue-400 shrink-0"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2" />
+      <path d="M12 14v7" />
+      <path d="M10.2 11 3.5 9.5" />
+      <path d="M13.8 11 20.5 9.5" />
+    </svg>
+  );
+
   return (
     <div className="flex flex-col gap-3">
       {/* Bus Shell Frame Top-View */}
@@ -273,35 +266,35 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
         {/* Windshield & Cockpit */}
         <div className="w-full max-w-[360px] flex flex-col items-center mb-3">
           <div className="w-44 h-3 bg-slate-300 dark:bg-slate-700 rounded-t-full opacity-80" />
-          <div className="w-full py-2 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl flex items-center justify-between text-slate-600 dark:text-slate-300 shadow-xs">
+          <div className="w-full py-2 px-3.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl flex items-center justify-between text-slate-600 dark:text-slate-300 shadow-xs">
             {bus.posisiSopir === 'kiri' ? (
               <>
-                <div className="flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[18px] text-blue-600 dark:text-blue-400">sports_score</span>
-                  <span className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold">Sopir</span>
+                <div className="flex items-center gap-1.5">
+                  <SteeringWheelIcon />
+                  <span className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold">
+                    Sopir
+                  </span>
                 </div>
-                <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-[11px] text-slate-700 dark:text-slate-200 font-bold">
-                  <span className="material-symbols-outlined text-[15px] text-blue-600 dark:text-blue-400">arrow_upward</span>
-                  <span>DEPAN</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Pintu</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+                    Kondektur
+                  </span>
                   <span className="material-symbols-outlined text-[18px] text-slate-400">door_front</span>
                 </div>
               </>
             ) : (
               <>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[18px] text-slate-400">door_front</span>
-                  <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Kondektur</span>
+                  <span className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
+                    Kondektur
+                  </span>
                 </div>
-                <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-[11px] text-slate-700 dark:text-slate-200 font-bold">
-                  <span className="material-symbols-outlined text-[15px] text-blue-600 dark:text-blue-400">arrow_upward</span>
-                  <span>DEPAN (SOPIR)</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold">Sopir</span>
-                  <span className="material-symbols-outlined text-[18px] text-blue-600 dark:text-blue-400">sports_score</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bold">
+                    Sopir
+                  </span>
+                  <SteeringWheelIcon />
                 </div>
               </>
             )}
@@ -312,18 +305,13 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
         <div className="w-full max-w-[360px] grid grid-cols-[1fr_1fr_32px_1fr_1fr] gap-1.5 text-center text-[11px] text-slate-500 dark:text-slate-400 mb-2 font-bold">
           <span>Kiri 1</span>
           <span>Kiri 2</span>
-          <span className="text-slate-400 dark:text-slate-500 uppercase text-[9px] tracking-wider self-center">Lorong</span>
+          <span />
           <span>Kanan 3</span>
           <span>Kanan 4</span>
         </div>
 
         {/* 8 Rows Leg Rest (A-H) */}
         <div className="w-full max-w-[360px] flex flex-col gap-2 relative">
-          {/* Center aisle dashed guide */}
-          <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-8 flex justify-center pointer-events-none">
-            <div className="w-[1px] h-full border-r border-dashed border-slate-300 dark:border-slate-700" />
-          </div>
-
           {LEG_REST_ROWS.map((row) => {
             const s1 = seatsMap.get(`${row}1`);
             const s2 = seatsMap.get(`${row}2`);
@@ -333,9 +321,7 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
               <div key={row} className="grid grid-cols-[1fr_1fr_32px_1fr_1fr] gap-1.5 items-center">
                 <div>{s1 && renderSeatButton(s1)}</div>
                 <div>{s2 && renderSeatButton(s2)}</div>
-                <span className="text-center text-[11px] text-slate-400 dark:text-slate-500 font-bold z-10 bg-slate-100/90 dark:bg-slate-900/90 py-0.5 rounded">
-                  {row}
-                </span>
+                <div />
                 <div>{s3 && renderSeatButton(s3)}</div>
                 <div>{s4 && renderSeatButton(s4)}</div>
               </div>
@@ -343,17 +329,8 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
           })}
         </div>
 
-        {/* Rear Row Divider */}
-        <div className="w-full max-w-[360px] flex items-center justify-center gap-2 my-3">
-          <div className="flex-1 h-[1px] bg-slate-300 dark:bg-slate-700" />
-          <span className="text-[11px] text-slate-600 dark:text-slate-300 font-semibold px-1.5 whitespace-nowrap">
-            — Seat Belakang (6 Kursi) —
-          </span>
-          <div className="flex-1 h-[1px] bg-slate-300 dark:bg-slate-700" />
-        </div>
-
         {/* Rear Row R1 - R6 */}
-        <div className="w-full max-w-[360px] grid grid-cols-6 gap-1 mb-1">
+        <div className="w-full max-w-[360px] grid grid-cols-6 gap-1 mt-6 mb-1">
           {[1, 2, 3, 4, 5, 6].map((pos) => {
             const seat = seatsMap.get(`R${pos}`);
             return <div key={pos}>{seat && renderSeatButton(seat, true)}</div>;
@@ -381,22 +358,16 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
             <span className="text-slate-700 dark:text-slate-300">Belakang tersedia</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded bg-sky-100 dark:bg-sky-950 border border-sky-300 dark:border-sky-700 flex items-center justify-center text-[9px] font-bold text-sky-900 dark:text-sky-200 shrink-0">
+            <div className="w-4 h-4 rounded bg-sky-50 dark:bg-sky-950 border border-sky-300 dark:border-sky-700 flex items-center justify-center text-[9px] font-bold text-sky-800 dark:text-sky-200 shrink-0">
               L
             </div>
             <span className="text-slate-700 dark:text-slate-300">Terisi Laki-laki</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded bg-rose-100 dark:bg-rose-950 border border-rose-300 dark:border-rose-700 flex items-center justify-center text-[9px] font-bold text-rose-800 dark:text-rose-200 shrink-0">
+            <div className="w-4 h-4 rounded bg-pink-50 dark:bg-pink-950 border border-pink-300 dark:border-pink-800 flex items-center justify-center text-[9px] font-bold text-pink-800 dark:text-pink-200 shrink-0">
               P
             </div>
             <span className="text-slate-700 dark:text-slate-300">Terisi Perempuan</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded seat-hatch-female border border-dashed border-rose-400 dark:border-rose-500 flex items-center justify-center text-[8px] font-bold text-rose-700 dark:text-rose-200 shrink-0">
-              P*
-            </div>
-            <span className="text-slate-700 dark:text-slate-300">Khusus Perempuan</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 rounded bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center shrink-0">
@@ -405,9 +376,9 @@ export const BusSeatMap: React.FC<BusSeatMapProps> = ({
             <span className="text-slate-700 dark:text-slate-300">Diblokir panitia</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded bg-rose-100 dark:bg-rose-950 border border-rose-300 dark:border-rose-700 flex items-center justify-center shrink-0">
+            <div className="w-4 h-4 rounded bg-pink-50 dark:bg-pink-950 border border-pink-300 dark:border-pink-800 flex items-center justify-center shrink-0">
               <span
-                className="material-symbols-outlined text-[12px] text-rose-600 dark:text-rose-400"
+                className="material-symbols-outlined text-[12px] text-pink-500 dark:text-pink-300"
                 style={{ fontVariationSettings: "'FILL' 1" }}
               >
                 favorite

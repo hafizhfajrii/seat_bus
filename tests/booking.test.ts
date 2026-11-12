@@ -14,17 +14,28 @@ import {
   ServiceError,
 } from '../server/bookingService.js';
 
-test('Bus 1 has 38 seats (32 leg_rest A1-H4 + 6 belakang R1-R6)', async () => {
+test('Bus 1 has 38 seats (32 leg_rest A1-H4 + 6 belakang R1-R6) and starts all available by default', async () => {
   const db = await createDatabase({ dbPath: ':memory:' });
   const seats = await getPublicBusSeats(db, 1);
   assert.equal(seats.length, 38);
   assert.equal(seats.filter((s) => s.tipe === 'leg_rest').length, 32);
   assert.equal(seats.filter((s) => s.tipe === 'belakang').length, 6);
+  assert.equal(seats.every((s) => s.status === 'tersedia'), true);
   await db.close();
 });
 
 test('Mode Sendiri enforces gender selection and two-way female seating rule', async () => {
   const db = await createDatabase({ dbPath: ':memory:' });
+
+  await createBooking(db, {
+    busId: 1,
+    mode: 'sendiri',
+    namaPemesan: 'Aisyah Putri',
+    gender: 'P',
+    noWhatsapp: '081299001122',
+    sessionId: 'sess-b1',
+    seats: [{ label: 'B1' }],
+  });
 
   await assert.rejects(
     () =>
@@ -285,44 +296,28 @@ test('Seat hold blocks other sessions, cancellation releases both couple seats, 
   await db.close();
 });
 
-test('Admin override requires Super Admin + reason, and blocks/cancels work properly', async () => {
+test('Admin override requires reason, and blocks/cancels work properly', async () => {
   const db = await createDatabase({ dbPath: ':memory:' });
-  await db.execute(
-    "INSERT INTO admins (id, nama, email, password_hash, role) VALUES (99, 'Panitia', 'panitia-test@transit.id', 'hash', 'admin')"
-  );
-  const regularAdmin = {
-    id: 99,
-    email: 'panitia-test@transit.id',
-    nama: 'Panitia',
+  await createBooking(db, {
+    busId: 1,
+    mode: 'sendiri',
+    namaPemesan: 'Aisyah Putri',
+    gender: 'P',
+    noWhatsapp: '081299001122',
+    sessionId: 'sess-b1-admin',
+    seats: [{ label: 'B1' }],
+  });
+  const adminAccount = {
+    id: 1,
+    email: 'admin',
+    nama: 'Admin',
     role: 'admin' as const,
     exp: 0,
   };
-  const superAdmin = {
-    id: 1,
-    email: 'Selangkahtourtravel@gmail.com',
-    nama: 'Super',
-    role: 'super_admin' as const,
-    exp: 0,
-  };
 
   await assert.rejects(
     () =>
-      adminManualBook(db, regularAdmin, {
-        busId: 1,
-        mode: 'sendiri',
-        namaPemesan: 'Dedi',
-        gender: 'L',
-        noWhatsapp: '081299990001',
-        seats: [{ label: 'B2' }],
-        override: true,
-        overrideReason: 'Darurat',
-      }),
-    (err: unknown) => err instanceof ServiceError && err.status === 403
-  );
-
-  await assert.rejects(
-    () =>
-      adminManualBook(db, superAdmin, {
+      adminManualBook(db, adminAccount, {
         busId: 1,
         mode: 'sendiri',
         namaPemesan: 'Dedi',
@@ -335,7 +330,7 @@ test('Admin override requires Super Admin + reason, and blocks/cancels work prop
     (err: unknown) => err instanceof ServiceError && err.status === 400
   );
 
-  const overridden = await adminManualBook(db, superAdmin, {
+  const overridden = await adminManualBook(db, adminAccount, {
     busId: 1,
     mode: 'sendiri',
     namaPemesan: 'Dedi',
@@ -347,13 +342,17 @@ test('Admin override requires Super Admin + reason, and blocks/cancels work prop
   });
   assert.equal(overridden.seats[0].label, 'B2');
 
-  const cancelled = await adminCancelBooking(db, regularAdmin, overridden.id, 'Selesai');
+  const cancelled = await adminCancelBooking(db, adminAccount, overridden.id, 'Selesai');
   assert.equal(cancelled.status, 'dibatalkan');
 
   const h4 = (await getPublicBusSeats(db, 1)).find((s) => s.label === 'H4')!;
-  await adminToggleBlockSeat(db, regularAdmin, { seatId: h4.id, block: true, alasan: 'Kursi Rusak' });
+  await adminToggleBlockSeat(
+    db,
+    { id: 9999, email: 'admin', nama: 'Admin', role: 'admin', exp: 0 },
+    { seatId: h4.id, block: true, alasan: 'Kursi Rusak' }
+  );
   assert.equal((await getPublicBusSeats(db, 1)).find((s) => s.label === 'H4')?.status, 'diblokir');
-  await adminToggleBlockSeat(db, regularAdmin, { seatId: h4.id, block: false });
+  await adminToggleBlockSeat(db, adminAccount, { seatId: h4.id, block: false });
   assert.equal((await getPublicBusSeats(db, 1)).find((s) => s.label === 'H4')?.status, 'tersedia');
 
   await db.close();

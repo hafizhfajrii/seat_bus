@@ -76,8 +76,12 @@ export function parseCookies(cookieHeader: string | undefined): Record<string, s
     const idx = part.indexOf('=');
     if (idx === -1) continue;
     const key = part.slice(0, idx).trim();
-    const val = decodeURIComponent(part.slice(idx + 1).trim());
-    out[key] = val;
+    const rawVal = part.slice(idx + 1).trim();
+    try {
+      out[key] = decodeURIComponent(rawVal);
+    } catch {
+      out[key] = rawVal;
+    }
   }
   return out;
 }
@@ -141,29 +145,26 @@ export function requireAdmin(req: AuthedRequest, res: Response, next: NextFuncti
   next();
 }
 
-export function requireSuperAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
-  requireAdmin(req, res, () => {
-    if (req.admin?.role !== 'super_admin') {
-      res.status(403).json({ error: 'Akses ditolak. Fitur ini hanya untuk Super Admin.' });
-      return;
-    }
-    next();
-  });
-}
-
 // Simple in-memory rate limiter for login and public lookup/booking
-const rateBuckets = new Map<string, number[]>();
+const rateBuckets = new Map<string, { timestamps: number[]; windowMs: number }>();
 
 export function checkRateLimit(key: string, maxRequests: number, windowMs: number): boolean {
   const now = Date.now();
-  const list = rateBuckets.get(key) ?? [];
-  const valid = list.filter((ts) => now - ts < windowMs);
+  if (rateBuckets.size > 500) {
+    for (const [k, entry] of rateBuckets) {
+      if (entry.timestamps.every((ts) => now - ts >= entry.windowMs)) {
+        rateBuckets.delete(k);
+      }
+    }
+  }
+  const entry = rateBuckets.get(key);
+  const valid = (entry?.timestamps ?? []).filter((ts) => now - ts < windowMs);
   if (valid.length >= maxRequests) {
-    rateBuckets.set(key, valid);
+    rateBuckets.set(key, { timestamps: valid, windowMs });
     return false;
   }
   valid.push(now);
-  rateBuckets.set(key, valid);
+  rateBuckets.set(key, { timestamps: valid, windowMs });
   return true;
 }
 

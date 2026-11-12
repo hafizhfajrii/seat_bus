@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AdminRole,
   AdminSeat,
-  AdminUser,
   AuditLogEntry,
   BookingDetail,
   BookingMode,
@@ -11,7 +10,6 @@ import type {
   DashboardSummary,
   EventInfo,
   Gender,
-  RegisteredPhone,
 } from '../../shared/types';
 import { formatWhatsAppDisplay } from '../../shared/seatRules';
 import { adminApi } from '../api';
@@ -24,7 +22,7 @@ interface AdminViewProps {
   onNavigateParticipant: () => void;
 }
 
-type AdminSection = 'dashboard' | 'denah' | 'manifest' | 'phones' | 'settings' | 'audit';
+type AdminSection = 'dashboard' | 'denah' | 'manifest' | 'settings' | 'audit';
 
 interface CurrentAdmin {
   id: number;
@@ -56,7 +54,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [seats, setSeats] = useState<AdminSeat[]>([]);
   const [bookings, setBookings] = useState<BookingDetail[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
 
   // Feedback
   const [toast, setToast] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
@@ -82,53 +79,76 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [moveSeat2, setMoveSeat2] = useState('');
   const [moveOverride, setMoveOverride] = useState(false);
   const [moveOverrideReason, setMoveOverrideReason] = useState('');
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const [moveSaving, setMoveSaving] = useState(false);
+
+  // Cancel confirmation modal state
+  const [cancelTargetBooking, setCancelTargetBooking] = useState<{
+    bookingId: number;
+    kode: string;
+  } | null>(null);
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
 
   // Manifest filters
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [manifestFilter, setManifestFilter] = useState<'semua' | 'L' | 'P' | 'pasangan' | 'dibatalkan'>('semua');
   const [manifestBusFilter, setManifestBusFilter] = useState<number | 'all'>('all');
 
   // Event & Bus forms
   const [eventDraft, setEventDraft] = useState<Partial<EventInfo>>({});
+  const eventDirtyRef = useRef(false);
+  const [eventSaving, setEventSaving] = useState(false);
   const [newBusNama, setNewBusNama] = useState('');
   const [newBusPlat, setNewBusPlat] = useState('');
   const [newBusTipe, setNewBusTipe] = useState('Executive Coach');
   const [newBusSopir, setNewBusSopir] = useState<'kanan' | 'kiri'>('kanan');
+  const [editingBus, setEditingBus] = useState<{
+    id: number;
+    nama: string;
+    platNomor: string;
+    tipeArmada: string;
+    posisiSopir: 'kanan' | 'kiri';
+  } | null>(null);
+  const [busSaving, setBusSaving] = useState(false);
+  const [busEditError, setBusEditError] = useState<string | null>(null);
+  const [eventFeedback, setEventFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
+    null
+  );
+  const [clearLogsModalOpen, setClearLogsModalOpen] = useState(false);
+  const [clearingLogs, setClearingLogs] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // New Admin user form (Super Admin)
-  const [newUserNama, setNewUserNama] = useState('');
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPass, setNewUserPass] = useState('');
-  const [newUserRole, setNewUserRole] = useState<AdminRole>('admin');
-
-  // Registered participant WhatsApp whitelist
-  const [registeredPhones, setRegisteredPhones] = useState<RegisteredPhone[]>([]);
-  const [singlePhoneInput, setSinglePhoneInput] = useState('');
-  const [singlePhoneNote, setSinglePhoneNote] = useState('');
-  const [bulkPhoneText, setBulkPhoneText] = useState('');
-  const [phoneSearch, setPhoneSearch] = useState('');
+  const updateEventDraft = (patch: Partial<EventInfo>) => {
+    eventDirtyRef.current = true;
+    setEventFeedback(null);
+    setEventDraft((prev) => ({ ...prev, ...patch }));
+  };
 
   const notify = (type: 'error' | 'success', text: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, text });
-    setTimeout(() => setToast(null), 5000);
+    toastTimerRef.current = setTimeout(() => setToast(null), 5000);
   };
 
   const loadAdminData = useCallback(
     async (preferredBusId?: number) => {
       try {
-        const [dash, bks, logs, phs] = await Promise.all([
+        const [dash, bks, logs] = await Promise.all([
           adminApi.getDashboard(),
           adminApi.listBookings(),
           adminApi.getAuditLogs(),
-          adminApi.listPhones(),
         ]);
         setEvent(dash.event);
-        setEventDraft(dash.event);
+        if (!eventDirtyRef.current) {
+          setEventDraft(dash.event);
+        }
         setSummary(dash.summary);
         setBuses(dash.buses);
         setBookings(bks.bookings);
         setAuditLogs(logs.logs);
-        setRegisteredPhones(phs.phones);
 
         const targetBus =
           preferredBusId && dash.buses.some((b) => b.id === preferredBusId)
@@ -149,15 +169,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
     [activeBusId]
   );
 
-  const loadSuperAdminUsers = useCallback(async (role: AdminRole) => {
-    if (role !== 'super_admin') return;
+  const handleManualRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
     try {
-      const res = await adminApi.listUsers();
-      setAdminUsers(res.users);
-    } catch {
-      // ignore
+      await Promise.all([
+        loadAdminData(activeBusId ?? undefined),
+        new Promise((r) => setTimeout(r, 320)),
+      ]);
+    } finally {
+      setIsRefreshing(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
     adminApi
@@ -165,7 +188,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
       .then((res) => {
         setCurrentAdmin(res.admin);
         loadAdminData();
-        loadSuperAdminUsers(res.admin.role);
       })
       .catch(() => {
         setCurrentAdmin(null);
@@ -201,7 +223,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
       const res = await adminApi.login(loginEmail, loginPassword);
       setCurrentAdmin(res.admin);
       await loadAdminData();
-      await loadSuperAdminUsers(res.admin.role);
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'Login gagal.');
     } finally {
@@ -290,11 +311,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setMoveSeat2(booking.seats[1]?.label ?? '');
     setMoveOverride(false);
     setMoveOverrideReason('');
+    setMoveError(null);
   };
 
   const handleMoveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!moveTargetBooking) return;
+    setMoveError(null);
+    setMoveSaving(true);
     try {
       const seatsPayload =
         moveTargetBooking.mode === 'sendiri'
@@ -309,35 +333,117 @@ export const AdminView: React.FC<AdminViewProps> = ({
         override: moveOverride,
         overrideReason: moveOverrideReason,
       });
+      const movedCode = moveTargetBooking.kodeBooking;
       setMoveTargetBooking(null);
-      notify('success', `Pesanan ${moveTargetBooking.kodeBooking} berhasil dipindahkan.`);
+      notify('success', `Pesanan ${movedCode} berhasil dipindahkan.`);
       await loadAdminData(activeBusId ?? undefined);
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal memindahkan kursi.');
+      const msg = err instanceof Error ? err.message : 'Gagal memindahkan kursi.';
+      setMoveError(msg);
+      notify('error', msg);
+    } finally {
+      setMoveSaving(false);
     }
   };
 
-  const handleAdminCancelBooking = async (bookingId: number, kode: string) => {
-    if (!window.confirm(`Lepas dan batalkan pesanan ${kode}? Status pesanan akan menjadi Dibatalkan.`)) {
-      return;
-    }
+  const handleAdminCancelBooking = (bookingId: number, kode: string) => {
+    setCancelTargetBooking({ bookingId, kode });
+  };
+
+  const handleConfirmAdminCancel = async () => {
+    if (!cancelTargetBooking) return;
+    setCancelSaving(true);
     try {
-      await adminApi.cancelBooking(bookingId, 'Dilepas oleh Admin');
-      notify('success', `Pesanan ${kode} dibatalkan dan kursi dilepas kembali.`);
+      await adminApi.cancelBooking(cancelTargetBooking.bookingId, 'Dilepas oleh Admin');
+      notify('success', `Pesanan ${cancelTargetBooking.kode} dibatalkan dan kursi dilepas kembali.`);
+      setCancelTargetBooking(null);
       await loadAdminData(activeBusId ?? undefined);
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'Gagal membatalkan pesanan.');
+      setCancelTargetBooking(null);
+    } finally {
+      setCancelSaving(false);
+    }
+  };
+
+  const handleExportCsv = async (busId?: number) => {
+    setExportingCsv(true);
+    try {
+      const url = busId
+        ? `/api/admin/manifest/export?busId=${encodeURIComponent(busId)}`
+        : '/api/admin/manifest/export';
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) {
+        let errText = `Gagal mengekspor manifest (${res.status}).`;
+        try {
+          const json = (await res.json()) as { error?: string };
+          if (json.error) errText = json.error;
+        } catch {
+          // ignore non-json error body
+        }
+        throw new Error(errText);
+      }
+      const blob = await res.blob();
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = dlUrl;
+      a.download = busId ? `manifest-bus-${busId}.csv` : 'manifest-penumpang.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(dlUrl), 1000);
+      notify('success', 'File manifest CSV berhasil diunduh.');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Gagal mengekspor manifest CSV.');
+    } finally {
+      setExportingCsv(false);
     }
   };
 
   const handleSaveEvent = async (e: React.FormEvent) => {
     e.preventDefault();
+    setEventSaving(true);
+    setEventFeedback(null);
     try {
-      await adminApi.updateEvent(eventDraft);
-      notify('success', 'Pengaturan event berhasil disimpan.');
+      const res = await adminApi.updateEvent(eventDraft);
+      eventDirtyRef.current = false;
+      setEvent(res.event);
+      setEventDraft(res.event);
+      const msg = 'Pengaturan event berhasil disimpan.';
+      setEventFeedback({ type: 'success', text: msg });
+      notify('success', msg);
       await loadAdminData(activeBusId ?? undefined);
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal menyimpan event.');
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan pengaturan event.';
+      setEventFeedback({ type: 'error', text: msg });
+      notify('error', msg);
+    } finally {
+      setEventSaving(false);
+    }
+  };
+
+  const handleSaveEditedBus = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBus) return;
+    setBusSaving(true);
+    setBusEditError(null);
+    try {
+      await adminApi.updateBus(editingBus.id, {
+        nama: editingBus.nama.trim(),
+        platNomor: editingBus.platNomor.trim(),
+        tipeArmada: editingBus.tipeArmada.trim(),
+        posisiSopir: editingBus.posisiSopir,
+      });
+      const updatedName = editingBus.nama.trim();
+      setEditingBus(null);
+      notify('success', `Data ${updatedName} berhasil diperbarui.`);
+      await loadAdminData(activeBusId ?? undefined);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal memperbarui data bus.';
+      setBusEditError(msg);
+      notify('error', msg);
+    } finally {
+      setBusSaving(false);
     }
   };
 
@@ -380,150 +486,29 @@ export const AdminView: React.FC<AdminViewProps> = ({
     }
   };
 
-  const handleCreateAdminUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleDeleteAuditLog = async (id: number) => {
     try {
-      await adminApi.createUser({
-        nama: newUserNama,
-        email: newUserEmail,
-        password: newUserPass,
-        role: newUserRole,
-      });
-      setNewUserNama('');
-      setNewUserEmail('');
-      setNewUserPass('');
-      notify('success', 'Akun admin baru berhasil dibuat.');
-      if (currentAdmin) await loadSuperAdminUsers(currentAdmin.role);
-      await loadAdminData(activeBusId ?? undefined);
+      await adminApi.deleteAuditLog(id);
+      setAuditLogs((prev) => prev.filter((item) => item.id !== id));
+      notify('success', 'Log aktivitas dihapus.');
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal membuat akun admin.');
+      notify('error', err instanceof Error ? err.message : 'Gagal menghapus log aktivitas.');
     }
   };
 
-  const handleDeleteAdminUser = async (id: number) => {
-    if (!window.confirm('Hapus akun admin ini?')) return;
+  const handleClearAuditLogs = async () => {
+    setClearingLogs(true);
     try {
-      await adminApi.deleteUser(id);
-      notify('success', 'Akun admin dihapus.');
-      if (currentAdmin) await loadSuperAdminUsers(currentAdmin.role);
-      await loadAdminData(activeBusId ?? undefined);
+      await adminApi.clearAuditLogs();
+      setAuditLogs([]);
+      setClearLogsModalOpen(false);
+      notify('success', 'Semua log aktivitas berhasil dihapus.');
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal menghapus akun.');
+      notify('error', err instanceof Error ? err.message : 'Gagal menghapus semua log.');
+    } finally {
+      setClearingLogs(false);
     }
   };
-
-  const handleAddSinglePhone = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await adminApi.addPhones([{ noWhatsapp: singlePhoneInput, catatan: singlePhoneNote }]);
-      if (res.invalid.length > 0) {
-        notify('error', `Nomor tidak valid: ${res.invalid.join(', ')}`);
-        return;
-      }
-      setSinglePhoneInput('');
-      setSinglePhoneNote('');
-      notify('success', 'Nomor WhatsApp berhasil didaftarkan.');
-      await loadAdminData(activeBusId ?? undefined);
-    } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal mendaftarkan nomor.');
-    }
-  };
-
-  const parseBulkPhoneEntries = useCallback((rawText: string) => {
-    const entries: Array<{ noWhatsapp: string; catatan?: string }> = [];
-    const lines = rawText
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    const looksLikePhone = (str: string) => {
-      const digits = str.replace(/\D/g, '');
-      return digits.length >= 9 && digits.length <= 15 && !/[a-zA-Z]{2,}/.test(str);
-    };
-
-    for (const line of lines) {
-      const parts = line
-        .split(/[,;\t|]+/)
-        .map((p) => p.trim())
-        .filter(Boolean);
-      if (parts.length === 0) continue;
-
-      // Case 1: Multiple phone numbers on the same line (e.g. "0812..., 0856..., 0813...")
-      if (parts.length >= 2 && parts.every(looksLikePhone)) {
-        for (const p of parts) {
-          entries.push({ noWhatsapp: p, catatan: '' });
-        }
-        continue;
-      }
-
-      // Case 2: Phone + Name/Note in either order (e.g. Excel 2 columns)
-      const phoneIdx = parts.findIndex(looksLikePhone);
-      if (phoneIdx !== -1) {
-        const phone = parts[phoneIdx];
-        const note = parts.filter((_, idx) => idx !== phoneIdx).join(' ').trim();
-        entries.push({ noWhatsapp: phone, catatan: note });
-      } else {
-        entries.push({ noWhatsapp: parts[0], catatan: parts.slice(1).join(' ').trim() });
-      }
-    }
-    return entries;
-  }, []);
-
-  const parsedBulkPreview = useMemo(
-    () => parseBulkPhoneEntries(bulkPhoneText),
-    [bulkPhoneText, parseBulkPhoneEntries]
-  );
-
-  const handleBulkPhones = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (parsedBulkPreview.length === 0) return;
-
-    try {
-      const res = await adminApi.addPhones(parsedBulkPreview);
-      setBulkPhoneText('');
-      if (res.invalid.length > 0) {
-        notify(
-          'success',
-          `${res.added} nomor berhasil didaftarkan. ${res.invalid.length} baris dilewati karena format tidak valid (${res.invalid.slice(0, 3).join(', ')}).`
-        );
-      } else {
-        notify('success', `${res.added} nomor WhatsApp berhasil didaftarkan.`);
-      }
-      await loadAdminData(activeBusId ?? undefined);
-    } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal import nomor.');
-    }
-  };
-
-  const handleBulkFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    setBulkPhoneText((prev) => (prev ? `${prev}\n${text}` : text));
-    e.target.value = '';
-  };
-
-  const handleDeletePhone = async (id: number, phone: string) => {
-    if (!window.confirm(`Hapus nomor ${formatWhatsAppDisplay(phone)} dari daftar terdaftar?`)) return;
-    try {
-      await adminApi.deletePhone(id);
-      notify('success', 'Nomor dihapus dari daftar peserta terdaftar.');
-      await loadAdminData(activeBusId ?? undefined);
-    } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Gagal menghapus nomor.');
-    }
-  };
-
-  const filteredPhones = useMemo(() => {
-    const q = phoneSearch.trim().toLowerCase();
-    if (!q) return registeredPhones;
-    return registeredPhones.filter(
-      (p) =>
-        p.noWhatsapp.includes(q) ||
-        formatWhatsAppDisplay(p.noWhatsapp).includes(q) ||
-        p.catatan.toLowerCase().includes(q)
-    );
-  }, [registeredPhones, phoneSearch]);
 
   const filteredBookings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -631,7 +616,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="admin atau nama@email.com"
+                placeholder="Selangkahtourtravel@gmail.com"
                 className="h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
               />
             </div>
@@ -674,12 +659,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
     { id: 'denah', label: 'Denah & Kursi', icon: 'airline_seat_recline_extra' },
     { id: 'manifest', label: 'Manifest', icon: 'assignment' },
-    { id: 'phones', label: 'Nomor Peserta', icon: 'contact_phone' },
     { id: 'settings', label: 'Event & Bus', icon: 'tune' },
-    { id: 'audit', label: 'Akun & Log', icon: 'history' },
+    { id: 'audit', label: 'Log Aktivitas', icon: 'history' },
   ];
-
-  const isSuperAdmin = currentAdmin.role === 'super_admin';
 
   return (
     <div className="min-h-screen bg-[#faf8ff] text-slate-900 flex flex-col md:flex-row">
@@ -722,7 +704,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <div className="text-xs font-bold text-slate-900 truncate">{currentAdmin.nama}</div>
             <div className="text-[11px] text-slate-500 truncate">{currentAdmin.email}</div>
             <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-extrabold uppercase">
-              {isSuperAdmin ? 'Super Admin' : 'Admin'}
+              Admin
             </span>
           </div>
           <div className="flex gap-2">
@@ -757,7 +739,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
           </button>
           <div>
             <span className="text-[10px] uppercase font-bold tracking-wider text-blue-600 block">
-              {isSuperAdmin ? 'Super Admin' : 'Admin Panitia'}
+              Admin Panitia
             </span>
             <h1 className="text-sm font-bold text-slate-900 leading-tight">
               Kelola Penumpang &amp; Kursi
@@ -794,8 +776,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
       </div>
 
       {/* Main Content */}
-      <main className="flex-1 md:pl-64 min-w-0">
-        <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-5">
+      <main className="flex-1 md:pl-64 print:pl-0 min-w-0">
+        <div className="max-w-5xl mx-auto p-4 sm:p-6 print:p-0 print:max-w-none space-y-5">
           {/* Operational Status Banner */}
           {event && (
             <div className="no-print flex items-center justify-between bg-indigo-50/80 border border-indigo-100 px-4 py-2.5 rounded-xl flex-wrap gap-2">
@@ -815,19 +797,28 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </span>
                 <button
                   type="button"
-                  onClick={() => loadAdminData(activeBusId ?? undefined)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-slate-200 text-blue-700 text-[11px] font-bold hover:bg-blue-50"
+                  disabled={isRefreshing}
+                  onClick={handleManualRefresh}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-slate-200 text-blue-700 text-[11px] font-bold hover:bg-blue-50 transition-all ${
+                    isRefreshing ? 'animate-pulse opacity-80' : ''
+                  }`}
                 >
-                  <span className="material-symbols-outlined text-[14px]">refresh</span>
-                  <span>Sinkron</span>
+                  <span
+                    className={`material-symbols-outlined text-[14px] ${isRefreshing ? 'animate-spin' : ''}`}
+                  >
+                    refresh
+                  </span>
+                  <span>{isRefreshing ? 'Menyegarkan...' : 'Refresh'}</span>
                 </button>
               </div>
             </div>
           )}
 
+          <div className={`transition-opacity duration-150 space-y-5 ${isRefreshing ? 'opacity-45' : 'opacity-100'}`}>
+
           {toast && (
             <div
-              className={`no-print p-3.5 rounded-xl border text-xs font-semibold flex items-center justify-between gap-2 shadow-sm ${
+              className={`no-print fixed top-4 right-4 z-[60] max-w-sm p-3.5 rounded-xl border text-xs font-semibold flex items-center justify-between gap-2 shadow-lg ${
                 toast.type === 'error'
                   ? 'bg-rose-50 border-rose-200 text-rose-800'
                   : 'bg-emerald-50 border-emerald-200 text-emerald-800'
@@ -860,7 +851,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div className="text-2xl font-black text-slate-900 mt-1">
                     <span className="text-sky-700">{summary.maleCount} L</span>
                     <span className="text-slate-300 mx-1.5">/</span>
-                    <span className="text-rose-600">{summary.femaleCount} P</span>
+                    <span className="text-pink-700">{summary.femaleCount} P</span>
                   </div>
                 </div>
                 <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs">
@@ -875,10 +866,31 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <div className="space-y-3">
                   {summary.buses.map((b) => {
                     const pct = b.total > 0 ? Math.round((b.occupied / b.total) * 100) : 0;
+                    const busObj = buses.find((item) => item.id === b.busId);
                     return (
                       <div key={b.busId} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                        <div className="flex items-center justify-between text-xs font-bold">
-                          <span>{b.nama}</span>
+                        <div className="flex items-center justify-between gap-2 text-xs font-bold flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <span>{b.nama}</span>
+                            {busObj && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingBus({
+                                    id: busObj.id,
+                                    nama: busObj.nama,
+                                    platNomor: busObj.platNomor,
+                                    tipeArmada: busObj.tipeArmada,
+                                    posisiSopir: busObj.posisiSopir,
+                                  })
+                                }
+                                className="px-2 py-0.5 rounded-md bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-[11px] font-semibold inline-flex items-center gap-1"
+                              >
+                                <span className="material-symbols-outlined text-[13px]">edit</span>
+                                <span>Edit</span>
+                              </button>
+                            )}
+                          </div>
                           <span>
                             {b.occupied}/{b.total} Terisi ({b.available} Kosong • {b.blocked} Kunci)
                           </span>
@@ -964,13 +976,33 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       </p>
                     </div>
                   </div>
-                  <a
-                    href={`/api/admin/manifest/export?busId=${activeBus.id}`}
-                    className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold"
-                  >
-                    <span className="material-symbols-outlined text-[17px]">file_download</span>
-                    <span>Export CSV</span>
-                  </a>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditingBus({
+                          id: activeBus.id,
+                          nama: activeBus.nama,
+                          platNomor: activeBus.platNomor,
+                          tipeArmada: activeBus.tipeArmada,
+                          posisiSopir: activeBus.posisiSopir,
+                        })
+                      }
+                      className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">edit</span>
+                      <span>Edit Bus</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={exportingCsv}
+                      onClick={() => handleExportCsv(activeBus.id)}
+                      className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-60"
+                    >
+                      <span className="material-symbols-outlined text-[17px]">file_download</span>
+                      <span>{exportingCsv ? 'Mengunduh...' : 'Export CSV'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-4 gap-2 pt-1">
@@ -1036,8 +1068,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
                               ? 'bg-slate-200 text-slate-600'
                               : inspectedSeat.status === 'terisi'
                               ? inspectedSeat.occupiedGender === 'P'
-                                ? 'bg-rose-100 text-rose-800'
-                                : 'bg-sky-100 text-sky-900'
+                                ? 'bg-pink-50 text-pink-800 border border-pink-200'
+                                : 'bg-sky-50 text-sky-800 border border-sky-200'
                               : 'bg-emerald-100 text-emerald-800'
                           }`}
                         >
@@ -1207,7 +1239,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                     onClick={() => setManualGender('L')}
                                     className={`h-8 rounded-lg font-bold ${
                                       manualGender === 'L'
-                                        ? 'bg-sky-600 text-white'
+                                        ? 'bg-sky-500 text-white'
                                         : 'bg-white text-slate-700 border border-slate-200'
                                     }`}
                                   >
@@ -1218,7 +1250,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                     onClick={() => setManualGender('P')}
                                     className={`h-8 rounded-lg font-bold ${
                                       manualGender === 'P'
-                                        ? 'bg-rose-600 text-white'
+                                        ? 'bg-pink-500 text-white'
                                         : 'bg-white text-slate-700 border border-slate-200'
                                     }`}
                                   >
@@ -1286,28 +1318,26 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300"
                               />
 
-                              {isSuperAdmin && (
-                                <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 space-y-1.5">
-                                  <label className="flex items-center gap-2 font-bold text-amber-900 cursor-pointer">
-                                    <input
-                                      type="checkbox"
-                                      checked={manualOverride}
-                                      onChange={(e) => setManualOverride(e.target.checked)}
-                                    />
-                                    <span>Override Aturan Kursi (Super Admin)</span>
-                                  </label>
-                                  {manualOverride && (
-                                    <input
-                                      type="text"
-                                      required
-                                      value={manualOverrideReason}
-                                      onChange={(e) => setManualOverrideReason(e.target.value)}
-                                      placeholder="Wajib isi alasan pengecualian..."
-                                      className="w-full h-8 px-2.5 rounded-lg bg-white border border-amber-300"
-                                    />
-                                  )}
-                                </div>
-                              )}
+                              <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 space-y-1.5">
+                                <label className="flex items-center gap-2 font-bold text-amber-900 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={manualOverride}
+                                    onChange={(e) => setManualOverride(e.target.checked)}
+                                  />
+                                  <span>Override Aturan Kursi</span>
+                                </label>
+                                {manualOverride && (
+                                  <input
+                                    type="text"
+                                    required
+                                    value={manualOverrideReason}
+                                    onChange={(e) => setManualOverrideReason(e.target.value)}
+                                    placeholder="Wajib isi alasan pengecualian..."
+                                    className="w-full h-8 px-2.5 rounded-lg bg-white border border-amber-300"
+                                  />
+                                )}
+                              </div>
 
                               <button
                                 type="submit"
@@ -1337,17 +1367,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  <a
-                    href={
-                      manifestBusFilter === 'all'
-                        ? '/api/admin/manifest/export'
-                        : `/api/admin/manifest/export?busId=${manifestBusFilter}`
+                  <button
+                    type="button"
+                    disabled={exportingCsv}
+                    onClick={() =>
+                      handleExportCsv(manifestBusFilter === 'all' ? undefined : manifestBusFilter)
                     }
-                    className="px-3 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5"
+                    className="px-3 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-60"
                   >
                     <span className="material-symbols-outlined text-[17px]">file_download</span>
-                    <span>Ekspor CSV / Excel</span>
-                  </a>
+                    <span>{exportingCsv ? 'Mengunduh...' : 'Ekspor CSV / Excel'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => window.print()}
@@ -1362,18 +1392,49 @@ export const AdminView: React.FC<AdminViewProps> = ({
               {/* Search & Filter Controls */}
               <div className="no-print bg-white rounded-2xl p-3.5 border border-slate-200 space-y-3">
                 <div className="flex flex-col sm:flex-row gap-2">
-                  <div className="relative flex-1">
-                    <span className="material-symbols-outlined absolute left-3 top-2.5 text-slate-400 text-[19px]">
-                      search
-                    </span>
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Cari nama, kode booking, kursi, atau WhatsApp..."
-                      className="w-full h-10 pl-9 pr-3 rounded-xl bg-slate-50 border border-slate-200 text-xs focus:outline-none focus:border-blue-600 focus:bg-white"
-                    />
-                  </div>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      setSearchQuery(searchInput.trim());
+                    }}
+                    className="flex flex-1 gap-2"
+                  >
+                    <div className="relative flex-1">
+                      <span className="material-symbols-outlined absolute left-3 top-2.5 text-slate-400 text-[19px]">
+                        search
+                      </span>
+                      <input
+                        type="text"
+                        value={searchInput}
+                        onChange={(e) => {
+                          setSearchInput(e.target.value);
+                          setSearchQuery(e.target.value);
+                        }}
+                        placeholder="Cari nama, kode booking, kursi, atau WhatsApp..."
+                        className="w-full h-10 pl-9 pr-8 rounded-xl bg-slate-50 border border-slate-200 text-xs focus:outline-none focus:border-blue-600 focus:bg-white"
+                      />
+                      {searchInput && (
+                        <button
+                          type="button"
+                          aria-label="Hapus pencarian"
+                          onClick={() => {
+                            setSearchInput('');
+                            setSearchQuery('');
+                          }}
+                          className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-700"
+                        >
+                          <span className="material-symbols-outlined text-[17px]">close</span>
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="submit"
+                      className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">search</span>
+                      <span>Cari</span>
+                    </button>
+                  </form>
                   <select
                     value={manifestBusFilter}
                     onChange={(e) =>
@@ -1438,8 +1499,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 isCouple
                                   ? 'bg-emerald-100 text-emerald-800'
                                   : isFemale
-                                  ? 'bg-rose-100 text-rose-800'
-                                  : 'bg-sky-100 text-sky-900'
+                                  ? 'bg-pink-50 text-pink-800 border border-pink-200'
+                                  : 'bg-sky-50 text-sky-800 border border-sky-200'
                               }`}
                             >
                               {b.namaPemesan
@@ -1458,7 +1519,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                   <span
                                     className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
                                       isFemale
-                                        ? 'bg-rose-100 text-rose-800'
+                                        ? 'bg-pink-100 text-pink-800'
                                         : 'bg-sky-100 text-sky-800'
                                     }`}
                                   >
@@ -1520,7 +1581,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </div>
 
               {/* Printable / Ordered Table */}
-              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs overflow-x-auto">
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs overflow-x-auto print:overflow-visible print:border-0 print:shadow-none print:p-0">
+                {event && (
+                  <div className="hidden print:block mb-4 pb-3 border-b border-slate-300">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      Manifest Penumpang — {event.nama}
+                    </h2>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      {event.tanggal} • {event.jamBerangkat} • {event.lokasiBerangkat}
+                    </p>
+                  </div>
+                )}
                 <h3 className="text-sm font-bold text-slate-900 mb-3">
                   Tabel Manifest Urut Kursi ({sortedManifestRows.length} Penumpang)
                 </h3>
@@ -1554,161 +1625,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
-          {/* SECTION 3B: NOMOR PESERTA TERDAFTAR (WHITELIST WA) */}
-          {section === 'phones' && (
-            <div className="space-y-5">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">Nomor WhatsApp Peserta Terdaftar</h2>
-                <p className="text-xs text-slate-500">
-                  Hanya peserta dengan nomor WhatsApp yang terdaftar di sini yang dapat memesan kursi setelah
-                  login dengan email.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-                <form
-                  onSubmit={handleAddSinglePhone}
-                  className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs"
-                >
-                  <h3 className="text-sm font-bold text-slate-900">Tambah 1 Nomor</h3>
-                  <div className="space-y-2">
-                    <input
-                      type="tel"
-                      required
-                      value={singlePhoneInput}
-                      onChange={(e) => setSinglePhoneInput(e.target.value)}
-                      placeholder="No. WhatsApp (cth. 081234567890)"
-                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
-                    />
-                    <input
-                      type="text"
-                      value={singlePhoneNote}
-                      onChange={(e) => setSinglePhoneNote(e.target.value)}
-                      placeholder="Nama / Catatan (opsional)"
-                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    className="w-full h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
-                  >
-                    + Daftarkan Nomor
-                  </button>
-                </form>
-
-                <form
-                  onSubmit={handleBulkPhones}
-                  className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs"
-                >
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <h3 className="text-sm font-bold text-slate-900">Masukkan Banyak Nomor Sekaligus</h3>
-                    <label className="cursor-pointer px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] inline-flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[15px]">upload_file</span>
-                      <span>Import CSV/TXT</span>
-                      <input
-                        type="file"
-                        accept=".csv,.txt"
-                        onChange={handleBulkFileUpload}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-                  <p className="text-[11px] text-slate-500">
-                    Bisa tempel langsung dari Excel/Sheets, pisahkan per baris atau koma. Format bebas:{' '}
-                    <code className="bg-slate-100 px-1 rounded">0812xxx</code>,{' '}
-                    <code className="bg-slate-100 px-1 rounded">0812xxx, Budi</code>, atau{' '}
-                    <code className="bg-slate-100 px-1 rounded">Budi, 0812xxx</code>.
-                  </p>
-                  <textarea
-                    rows={4}
-                    value={bulkPhoneText}
-                    onChange={(e) => setBulkPhoneText(e.target.value)}
-                    placeholder={'081234567890, Budi Santoso\n085611112222, Siti Aminah\n081399998888'}
-                    className="w-full p-3 rounded-xl bg-slate-50 border border-slate-300 font-mono text-xs"
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-slate-500">
-                      {parsedBulkPreview.length > 0
-                        ? `Terdeteksi ${parsedBulkPreview.length} baris/nomor siap ditambahkan`
-                        : 'Tempel daftar nomor di atas atau pilih file CSV/TXT'}
-                    </span>
-                    <button
-                      type="submit"
-                      disabled={parsedBulkPreview.length === 0}
-                      className="px-4 h-10 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold disabled:opacity-50"
-                    >
-                      Tambahkan Semua
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3 text-xs">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Daftar Nomor Terdaftar ({registeredPhones.length})
-                  </h3>
-                  <input
-                    type="text"
-                    value={phoneSearch}
-                    onChange={(e) => setPhoneSearch(e.target.value)}
-                    placeholder="Cari nomor atau nama..."
-                    className="h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 w-full sm:w-64"
-                  />
-                </div>
-
-                {filteredPhones.length === 0 ? (
-                  <div className="py-6 text-center text-slate-500">
-                    Belum ada nomor WhatsApp terdaftar yang cocok.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-500">
-                          <th className="py-2 pr-3">No. WhatsApp</th>
-                          <th className="py-2 pr-3">Nama / Catatan</th>
-                          <th className="py-2 pr-3">Status Pemesanan</th>
-                          <th className="py-2 text-right">Aksi</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filteredPhones.map((p) => (
-                          <tr key={p.id}>
-                            <td className="py-2.5 pr-3 font-mono font-bold text-slate-900">
-                              {formatWhatsAppDisplay(p.noWhatsapp)}
-                            </td>
-                            <td className="py-2.5 pr-3 text-slate-700">{p.catatan || '-'}</td>
-                            <td className="py-2.5 pr-3">
-                              {p.hasActiveBooking ? (
-                                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
-                                  Sudah Pesan Kursi
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold text-[10px]">
-                                  Belum Pesan
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-2.5 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePhone(p.id, p.noWhatsapp)}
-                                className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px]"
-                              >
-                                Hapus
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* SECTION 4: PENGATURAN EVENT & BUS */}
           {section === 'settings' && event && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
@@ -1725,7 +1641,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     type="text"
                     required
                     value={eventDraft.nama ?? ''}
-                    onChange={(e) => setEventDraft({ ...eventDraft, nama: e.target.value })}
+                    onChange={(e) => updateEventDraft({ nama: e.target.value })}
                     className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                   />
                 </div>
@@ -1737,7 +1653,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="text"
                       required
                       value={eventDraft.tanggal ?? ''}
-                      onChange={(e) => setEventDraft({ ...eventDraft, tanggal: e.target.value })}
+                      onChange={(e) => updateEventDraft({ tanggal: e.target.value })}
                       className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                     />
                   </div>
@@ -1747,7 +1663,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="text"
                       required
                       value={eventDraft.jamBerangkat ?? ''}
-                      onChange={(e) => setEventDraft({ ...eventDraft, jamBerangkat: e.target.value })}
+                      onChange={(e) => updateEventDraft({ jamBerangkat: e.target.value })}
                       className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                     />
                   </div>
@@ -1759,7 +1675,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     type="text"
                     required
                     value={eventDraft.lokasiBerangkat ?? ''}
-                    onChange={(e) => setEventDraft({ ...eventDraft, lokasiBerangkat: e.target.value })}
+                    onChange={(e) => updateEventDraft({ lokasiBerangkat: e.target.value })}
                     className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                   />
                 </div>
@@ -1769,7 +1685,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <input
                     type="text"
                     value={eventDraft.titikKumpulDetail ?? ''}
-                    onChange={(e) => setEventDraft({ ...eventDraft, titikKumpulDetail: e.target.value })}
+                    onChange={(e) => updateEventDraft({ titikKumpulDetail: e.target.value })}
                     className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                   />
                 </div>
@@ -1779,7 +1695,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <textarea
                     rows={3}
                     value={eventDraft.deskripsi ?? ''}
-                    onChange={(e) => setEventDraft({ ...eventDraft, deskripsi: e.target.value })}
+                    onChange={(e) => updateEventDraft({ deskripsi: e.target.value })}
                     className="w-full p-3 rounded-xl bg-slate-50 border border-slate-300"
                   />
                 </div>
@@ -1790,8 +1706,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     <select
                       value={eventDraft.statusPendaftaran ?? 'buka'}
                       onChange={(e) =>
-                        setEventDraft({
-                          ...eventDraft,
+                        updateEventDraft({
                           statusPendaftaran: e.target.value as 'buka' | 'tutup',
                         })
                       }
@@ -1809,7 +1724,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       max={20}
                       value={eventDraft.batasPesananPerWa ?? 1}
                       onChange={(e) =>
-                        setEventDraft({ ...eventDraft, batasPesananPerWa: Number(e.target.value) })
+                        updateEventDraft({ batasPesananPerWa: Number(e.target.value) })
                       }
                       className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                     />
@@ -1822,18 +1737,34 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       max={1800}
                       value={eventDraft.durasiHoldDetik ?? 300}
                       onChange={(e) =>
-                        setEventDraft({ ...eventDraft, durasiHoldDetik: Number(e.target.value) })
+                        updateEventDraft({ durasiHoldDetik: Number(e.target.value) })
                       }
                       className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
                     />
                   </div>
                 </div>
 
+                {eventFeedback && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
+                      eventFeedback.type === 'success'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-rose-50 border-rose-200 text-rose-800'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[17px] shrink-0">
+                      {eventFeedback.type === 'success' ? 'check_circle' : 'error'}
+                    </span>
+                    <span>{eventFeedback.text}</span>
+                  </div>
+                )}
+
                 <button
                   type="submit"
-                  className="w-full h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                  disabled={eventSaving}
+                  className="w-full h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60"
                 >
-                  Simpan Pengaturan Event
+                  {eventSaving ? 'Menyimpan...' : 'Simpan Pengaturan Event'}
                 </button>
               </form>
 
@@ -1856,7 +1787,23 @@ export const AdminView: React.FC<AdminViewProps> = ({
                             {b.tipeArmada} • Sopir: {b.posisiSopir} • {b.availableSeats}/{b.totalSeats} tersedia
                           </div>
                         </div>
-                        <div className="flex gap-1.5">
+                        <div className="flex gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingBus({
+                                id: b.id,
+                                nama: b.nama,
+                                platNomor: b.platNomor,
+                                tipeArmada: b.tipeArmada,
+                                posisiSopir: b.posisiSopir,
+                              })
+                            }
+                            className="px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 font-semibold inline-flex items-center gap-1"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">edit</span>
+                            <span>Edit</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleToggleBusDriverSide(b)}
@@ -1931,91 +1878,27 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
-          {/* SECTION 5: AKUN ADMIN & AUDIT LOG */}
+          {/* SECTION 5: AUDIT LOG */}
           {section === 'audit' && (
             <div className="space-y-5">
-              {isSuperAdmin && (
-                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-4 text-xs">
-                  <h2 className="text-sm font-bold text-slate-900">Kelola Akun Admin (Super Admin)</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      {adminUsers.map((u) => (
-                        <div
-                          key={u.id}
-                          className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2"
-                        >
-                          <div>
-                            <div className="font-bold text-slate-900">{u.nama}</div>
-                            <div className="text-slate-500">
-                              {u.email} • <span className="uppercase font-bold">{u.role}</span>
-                            </div>
-                          </div>
-                          {u.id !== currentAdmin.id && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteAdminUser(u.id)}
-                              className="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 font-bold"
-                            >
-                              Hapus
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-
-                    <form
-                      onSubmit={handleCreateAdminUser}
-                      className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5"
-                    >
-                      <div className="font-bold text-slate-800">Tambah Akun Admin</div>
-                      <input
-                        type="text"
-                        required
-                        value={newUserNama}
-                        onChange={(e) => setNewUserNama(e.target.value)}
-                        placeholder="Nama Lengkap"
-                        className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300"
-                      />
-                      <input
-                        type="email"
-                        required
-                        value={newUserEmail}
-                        onChange={(e) => setNewUserEmail(e.target.value)}
-                        placeholder="Email"
-                        className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="password"
-                          required
-                          minLength={6}
-                          value={newUserPass}
-                          onChange={(e) => setNewUserPass(e.target.value)}
-                          placeholder="Kata sandi (min 6)"
-                          className="h-9 px-3 rounded-lg bg-white border border-slate-300"
-                        />
-                        <select
-                          value={newUserRole}
-                          onChange={(e) => setNewUserRole(e.target.value as AdminRole)}
-                          className="h-9 px-2 rounded-lg bg-white border border-slate-300 font-semibold"
-                        >
-                          <option value="admin">Admin</option>
-                          <option value="super_admin">Super Admin</option>
-                        </select>
-                      </div>
-                      <button
-                        type="submit"
-                        className="w-full h-9 rounded-lg bg-blue-600 text-white font-bold"
-                      >
-                        Buat Akun
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              )}
-
               <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-3">
-                <h2 className="text-sm font-bold text-slate-900">Audit Log Aktivitas Admin</h2>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">Audit Log Aktivitas Admin</h2>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Tersimpan permanen di database (menampilkan maks. 200 log terbaru)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={auditLogs.length === 0}
+                    onClick={() => setClearLogsModalOpen(true)}
+                    className="px-3 h-9 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
+                    <span>Hapus Semua Log</span>
+                  </button>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
@@ -2024,29 +1907,49 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         <th className="py-2 pr-3">Admin</th>
                         <th className="py-2 pr-3">Aksi</th>
                         <th className="py-2 pr-3">Objek</th>
-                        <th className="py-2">Detail</th>
+                        <th className="py-2 pr-3">Detail</th>
+                        <th className="py-2 text-right">Hapus</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {auditLogs.map((log) => (
-                        <tr key={log.id}>
-                          <td className="py-2 pr-3 font-mono text-slate-500 whitespace-nowrap">{log.waktu}</td>
-                          <td className="py-2 pr-3 font-semibold">{log.adminNama}</td>
-                          <td className="py-2 pr-3">
-                            <span className="px-2 py-0.5 rounded bg-slate-100 font-mono text-[10px] font-bold">
-                              {log.aksi}
-                            </span>
+                      {auditLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-500">
+                            Belum ada log aktivitas admin.
                           </td>
-                          <td className="py-2 pr-3 font-semibold">{log.objek}</td>
-                          <td className="py-2 text-slate-600">{log.detail}</td>
                         </tr>
-                      ))}
+                      ) : (
+                        auditLogs.map((log) => (
+                          <tr key={log.id}>
+                            <td className="py-2 pr-3 font-mono text-slate-500 whitespace-nowrap">{log.waktu}</td>
+                            <td className="py-2 pr-3 font-semibold">{log.adminNama}</td>
+                            <td className="py-2 pr-3">
+                              <span className="px-2 py-0.5 rounded bg-slate-100 font-mono text-[10px] font-bold">
+                                {log.aksi}
+                              </span>
+                            </td>
+                            <td className="py-2 pr-3 font-semibold">{log.objek}</td>
+                            <td className="py-2 pr-3 text-slate-600">{log.detail}</td>
+                            <td className="py-2 text-right">
+                              <button
+                                type="button"
+                                title="Hapus log ini"
+                                onClick={() => handleDeleteAuditLog(log.id)}
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">delete</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
               </div>
             </div>
           )}
+          </div>
         </div>
       </main>
 
@@ -2120,32 +2023,37 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </div>
             )}
 
-            {isSuperAdmin && (
-              <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 space-y-1.5">
-                <label className="flex items-center gap-2 font-bold text-amber-900 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={moveOverride}
-                    onChange={(e) => setMoveOverride(e.target.checked)}
-                  />
-                  <span>Override Aturan (Super Admin)</span>
-                </label>
-                {moveOverride && (
-                  <input
-                    type="text"
-                    required
-                    value={moveOverrideReason}
-                    onChange={(e) => setMoveOverrideReason(e.target.value)}
-                    placeholder="Wajib isi alasan pengecualian..."
-                    className="w-full h-9 px-3 rounded-lg bg-white border border-amber-300"
-                  />
-                )}
+            <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 space-y-1.5">
+              <label className="flex items-center gap-2 font-bold text-amber-900 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={moveOverride}
+                  onChange={(e) => setMoveOverride(e.target.checked)}
+                />
+                <span>Override Aturan</span>
+              </label>
+              {moveOverride && (
+                <input
+                  type="text"
+                  required
+                  value={moveOverrideReason}
+                  onChange={(e) => setMoveOverrideReason(e.target.value)}
+                  placeholder="Wajib isi alasan pengecualian..."
+                  className="w-full h-9 px-3 rounded-lg bg-white border border-amber-300"
+                />
+              )}
+            </div>
+
+            {moveError && (
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                {moveError}
               </div>
             )}
 
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
+                disabled={moveSaving}
                 onClick={() => setMoveTargetBooking(null)}
                 className="flex-1 h-10 rounded-xl bg-slate-100 font-semibold text-slate-700"
               >
@@ -2153,12 +2061,189 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </button>
               <button
                 type="submit"
-                className="flex-1 h-10 rounded-xl bg-blue-600 text-white font-bold"
+                disabled={moveSaving}
+                className="flex-1 h-10 rounded-xl bg-blue-600 text-white font-bold disabled:opacity-60"
               >
-                Pindahkan
+                {moveSaving ? 'Memindahkan...' : 'Pindahkan'}
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Edit Bus Modal */}
+      {editingBus && (
+        <div
+          className="no-print fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !busSaving && setEditingBus(null)}
+        >
+          <form
+            onSubmit={handleSaveEditedBus}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-3.5 text-xs"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-base font-bold text-slate-900">Edit Data Armada Bus</h3>
+              <button
+                type="button"
+                disabled={busSaving}
+                onClick={() => setEditingBus(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700">Nama Bus</label>
+              <input
+                type="text"
+                required
+                value={editingBus.nama}
+                onChange={(e) => setEditingBus({ ...editingBus, nama: e.target.value })}
+                placeholder="cth. BUS 1"
+                className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700">Plat Nomor</label>
+              <input
+                type="text"
+                value={editingBus.platNomor}
+                onChange={(e) => setEditingBus({ ...editingBus, platNomor: e.target.value })}
+                placeholder="cth. B 7890 TAA"
+                className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700">Tipe Armada</label>
+              <input
+                type="text"
+                value={editingBus.tipeArmada}
+                onChange={(e) => setEditingBus({ ...editingBus, tipeArmada: e.target.value })}
+                placeholder="cth. Scania K410IB • Executive Coach"
+                className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="font-semibold text-slate-700">Posisi Sopir</label>
+              <select
+                value={editingBus.posisiSopir}
+                onChange={(e) =>
+                  setEditingBus({
+                    ...editingBus,
+                    posisiSopir: e.target.value === 'kiri' ? 'kiri' : 'kanan',
+                  })
+                }
+                className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-300 font-semibold"
+              >
+                <option value="kanan">Kanan</option>
+                <option value="kiri">Kiri</option>
+              </select>
+            </div>
+
+            {busEditError && (
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                {busEditError}
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                disabled={busSaving}
+                onClick={() => setEditingBus(null)}
+                className="flex-1 h-10 rounded-xl bg-slate-100 font-semibold text-slate-700"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busSaving}
+                className="flex-1 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60"
+              >
+                {busSaving ? 'Menyimpan...' : 'Simpan Perubahan'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Cancel Booking Confirmation Modal */}
+      {cancelTargetBooking && (
+        <div
+          className="no-print fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !cancelSaving && setCancelTargetBooking(null)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-4 text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-bold text-slate-900">
+              Batalkan Pesanan {cancelTargetBooking.kode}?
+            </h3>
+            <p className="text-slate-600 leading-relaxed">
+              Pesanan akan ditandai <strong>Dibatalkan</strong> dan kursinya langsung dilepas agar tersedia
+              kembali di denah.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={cancelSaving}
+                onClick={() => setCancelTargetBooking(null)}
+                className="flex-1 h-10 rounded-xl bg-slate-100 font-semibold text-slate-700"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={cancelSaving}
+                onClick={handleConfirmAdminCancel}
+                className="flex-1 h-10 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold disabled:opacity-60"
+              >
+                {cancelSaving ? 'Membatalkan...' : 'Ya, Lepas Kursi'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Clear All Audit Logs Confirmation Modal */}
+      {clearLogsModalOpen && (
+        <div
+          className="no-print fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !clearingLogs && setClearLogsModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-4 text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-bold text-slate-900">Hapus Semua Log Aktivitas?</h3>
+            <p className="text-slate-600 leading-relaxed">
+              Seluruh catatan riwayat aktivitas admin di tabel log akan dihapus permanen. Data pesanan
+              peserta, bus, dan event tidak terpengaruh.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={clearingLogs}
+                onClick={() => setClearLogsModalOpen(false)}
+                className="flex-1 h-10 rounded-xl bg-slate-100 font-semibold text-slate-700"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={clearingLogs}
+                onClick={handleClearAuditLogs}
+                className="flex-1 h-10 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold disabled:opacity-60"
+              >
+                {clearingLogs ? 'Menghapus...' : 'Ya, Hapus Semua'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

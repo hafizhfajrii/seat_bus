@@ -1,7 +1,6 @@
 import type {
   AdminRole,
   AdminSeat,
-  AdminUser,
   AuditLogEntry,
   BookingDetail,
   BookingMode,
@@ -13,7 +12,6 @@ import type {
   ParticipantUser,
   PublicLookupBooking,
   PublicSeat,
-  RegisteredPhone,
 } from '../shared/types';
 
 export function getSessionId(): string {
@@ -200,25 +198,8 @@ export const adminApi = {
       busId ? `/api/admin/bookings?busId=${busId}` : '/api/admin/bookings'
     ),
   getAuditLogs: () => apiFetch<{ logs: AuditLogEntry[] }>('/api/admin/audit-logs'),
-  listUsers: () => apiFetch<{ users: AdminUser[] }>('/api/admin/users'),
-  createUser: (payload: { nama: string; email: string; password: string; role: AdminRole }) =>
-    apiFetch<{ ok: boolean }>('/api/admin/users', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  deleteUser: (id: number) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/users/${id}`, {
-      method: 'DELETE',
-    }),
-  listPhones: () => apiFetch<{ phones: RegisteredPhone[] }>('/api/admin/phones'),
-  addPhones: (entries: Array<{ noWhatsapp: string; catatan?: string }>) =>
-    apiFetch<{ added: number; invalid: string[] }>('/api/admin/phones', {
-      method: 'POST',
-      body: JSON.stringify({ entries }),
-    }),
-  deletePhone: (id: number) =>
-    apiFetch<{ ok: boolean }>(`/api/admin/phones/${id}`, {
-      method: 'DELETE',
-    }),
+  deleteAuditLog: (id: number) =>
+    apiFetch<{ ok: boolean }>(`/api/admin/audit-logs/${id}`, { method: 'DELETE' }),
+  clearAuditLogs: () => apiFetch<{ ok: boolean }>('/api/admin/audit-logs', { method: 'DELETE' }),
 };
 

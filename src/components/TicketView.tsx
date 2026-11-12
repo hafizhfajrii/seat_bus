@@ -136,7 +136,7 @@ export const TicketView: React.FC<TicketViewProps> = ({
       ctx.fillText('Mode Suami & Istri', 460, 460);
     } else {
       ctx.fillText(booking.namaPemesan.slice(0, 22), 460, 395);
-      ctx.fillStyle = isFemale ? '#e11d48' : '#2563eb';
+      ctx.fillStyle = isFemale ? '#db2777' : '#0284c7';
       ctx.font = 'bold 20px sans-serif';
       ctx.fillText(isFemale ? 'Perempuan (P)' : 'Laki-laki (L)', 460, 435);
       ctx.fillStyle = '#64748b';
@@ -296,7 +296,7 @@ export const TicketView: React.FC<TicketViewProps> = ({
             <div className="p-4 pt-1 flex flex-col gap-3.5">
               {/* Seat & Passenger Bento */}
               <div className="grid grid-cols-2 gap-2.5">
-                <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 p-3 rounded-xl flex flex-col justify-between">
+                <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 p-3 rounded-xl flex flex-col">
                   <div className="flex items-center justify-between mb-1 gap-1">
                     <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
                       No. Kursi
@@ -305,16 +305,11 @@ export const TicketView: React.FC<TicketViewProps> = ({
                       {primarySeat?.tipe === 'leg_rest' ? 'Leg Rest' : 'Belakang'}
                     </span>
                   </div>
-                  <div className="flex items-baseline gap-1.5 my-0.5 flex-wrap">
+                  <div className="flex-1 flex items-center py-1">
                     <span className="text-2xl font-black text-blue-700 dark:text-blue-400 tracking-tight">
                       {seatSummary}
                     </span>
                   </div>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {isCouple
-                      ? '2 Kursi Gandeng Pasutri'
-                      : `${primarySeat?.posisiDesc ?? ''} • Baris ${primarySeat?.baris ?? ''}`}
-                  </span>
                 </div>
 
                 <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 p-3 rounded-xl flex flex-col justify-between">
@@ -324,7 +319,7 @@ export const TicketView: React.FC<TicketViewProps> = ({
                     </span>
                     {isCouple ? (
                       <span
-                        className="material-symbols-outlined text-[16px] text-rose-500"
+                        className="material-symbols-outlined text-[16px] text-pink-500 dark:text-pink-300"
                         style={{ fontVariationSettings: "'FILL' 1" }}
                       >
                         favorite
@@ -333,7 +328,7 @@ export const TicketView: React.FC<TicketViewProps> = ({
                       <span
                         className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] ${
                           isFemale
-                            ? 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300'
+                            ? 'bg-pink-100 dark:bg-pink-950 text-pink-800 dark:text-pink-200'
                             : 'bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300'
                         }`}
                       >
@@ -360,7 +355,7 @@ export const TicketView: React.FC<TicketViewProps> = ({
                       </h4>
                       <span
                         className={`inline-flex items-center gap-0.5 text-xs font-semibold mt-0.5 ${
-                          isFemale ? 'text-rose-600 dark:text-rose-400' : 'text-sky-700 dark:text-sky-400'
+                          isFemale ? 'text-pink-700 dark:text-pink-300' : 'text-sky-700 dark:text-sky-300'
                         }`}
                       >
                         <span className="material-symbols-outlined text-[13px]">

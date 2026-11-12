@@ -77,11 +77,10 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
   const [authNama, setAuthNama] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
-  const [editingWa, setEditingWa] = useState(false);
-  const [profileWaInput, setProfileWaInput] = useState('');
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
 
   // Modals & Navigation
-  const [activeTab, setActiveTab] = useState<'kursi' | 'jadwal' | 'tiket' | 'event'>('kursi');
+  const [activeTab, setActiveTab] = useState<'kursi' | 'jadwal' | 'tiket' | 'event' | 'profil'>('kursi');
   const [infoModal, setInfoModal] = useState<'jadwal' | 'event' | null>(null);
 
   const mapSectionRef = useRef<HTMLDivElement>(null);
@@ -109,7 +108,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
         setNamaPemesan((prev) => prev || meRes.participant!.nama);
         if (meRes.participant.noWhatsapp) {
           setNoWhatsapp(formatWhatsAppDisplay(meRes.participant.noWhatsapp));
-          setProfileWaInput(formatWhatsAppDisplay(meRes.participant.noWhatsapp));
         }
       } else {
         setMyBookings([]);
@@ -295,15 +293,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       });
       return;
     }
-    if (!participant.isPhoneRegistered) {
-      setAlertBanner({
-        type: 'error',
-        text: participant.noWhatsapp
-          ? `Nomor WhatsApp (${formatWhatsAppDisplay(participant.noWhatsapp)}) belum terdaftar oleh admin. Hubungi panitia agar nomor Anda didaftarkan sebelum memesan kursi.`
-          : 'Lengkapi nomor WhatsApp terdaftar Anda pada kartu Akun di atas sebelum memilih kursi.',
-      });
-      return;
-    }
     if (event?.statusPendaftaran !== 'buka') {
       setAlertBanner({ type: 'error', text: 'Maaf, pendaftaran kursi sedang ditutup oleh panitia.' });
       return;
@@ -392,13 +381,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       setAuthError(null);
       setAuthTab('login');
       setAuthModalOpen(true);
-      return;
-    }
-    if (!participant.isPhoneRegistered) {
-      setAlertBanner({
-        type: 'error',
-        text: 'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Anda belum bisa memesan kursi.',
-      });
       return;
     }
     if (event?.statusPendaftaran !== 'buka') {
@@ -546,10 +528,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       setAuthModalOpen(false);
       await loadParticipantSession();
       setAlertBanner({
-        type: res.participant.isPhoneRegistered ? 'success' : 'info',
-        text: res.participant.isPhoneRegistered
-          ? `Selamat datang, ${res.participant.nama}! Nomor WhatsApp Anda terverifikasi dan siap memesan kursi.`
-          : `Berhasil login sebagai ${res.participant.email}. Catatan: Nomor WhatsApp Anda belum terdaftar oleh admin sehingga belum bisa memesan kursi.`,
+        type: 'success',
+        text: `Selamat datang, ${res.participant.nama}! Anda sudah dapat memilih dan memesan kursi.`,
       });
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Gagal masuk.');
@@ -571,8 +551,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       setAuthModalOpen(false);
       await loadParticipantSession();
       setAlertBanner({
-        type: 'info',
-        text: `Pendaftaran berhasil untuk ${res.participant.email}! Silakan masukkan Nomor WhatsApp Anda di kartu akun untuk verifikasi sebelum memesan kursi.`,
+        type: 'success',
+        text: `Pendaftaran berhasil untuk ${res.participant.email}! Silakan pilih kursi di denah.`,
       });
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Gagal mendaftar.');
@@ -582,6 +562,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
   };
 
   const handleAuthLogout = async () => {
+    setProfileModalOpen(false);
     await clearSelection();
     await publicApi.authLogout();
     setParticipant(null);
@@ -589,27 +570,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
     setNamaPemesan('');
     setNoWhatsapp('');
     setAlertBanner({ type: 'info', text: 'Anda telah keluar. Sekarang berada dalam mode tamu.' });
-  };
-
-  const handleSaveProfileWa = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await publicApi.authUpdateProfile({ noWhatsapp: profileWaInput });
-      setParticipant(res.participant);
-      setEditingWa(false);
-      await loadParticipantSession();
-      setAlertBanner({
-        type: res.participant.isPhoneRegistered ? 'success' : 'info',
-        text: res.participant.isPhoneRegistered
-          ? 'Nomor WhatsApp terverifikasi terdaftar oleh admin! Anda sekarang dapat memesan kursi.'
-          : 'Nomor WhatsApp disimpan, namun belum terdaftar di daftar panitia/admin.',
-      });
-    } catch (err) {
-      setAlertBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Gagal menyimpan nomor WhatsApp.',
-      });
-    }
   };
 
   const handleConfirmLookupCancel = async () => {
@@ -670,7 +630,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
     <div className="min-h-screen bg-slate-50/70 dark:bg-slate-950 flex flex-col">
       {/* Fixed Header */}
       <header className="fixed top-0 w-full z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 shadow-sm">
-        <div className="h-18 px-4 max-w-lg mx-auto flex items-center justify-between gap-2">
+        <div className="h-15 px-4 max-w-lg mx-auto flex items-center justify-between gap-2">
           <div className="flex flex-col justify-center min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="material-symbols-outlined text-blue-600 dark:text-blue-400 text-[18px]">
@@ -683,25 +643,18 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             <h1 className="text-base text-slate-900 dark:text-white leading-tight font-bold truncate">
               Pemesanan Kursi
             </h1>
-            <div className="flex items-center gap-1 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              <span className="material-symbols-outlined text-slate-400 text-[13px]">event</span>
-              <span className="truncate">
-                {event.tanggal} • {event.lokasiBerangkat}
-              </span>
-            </div>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             {participant ? (
               <button
                 type="button"
-                onClick={handleAuthLogout}
-                title={`Keluar (${participant.email})`}
-                className="inline-flex items-center gap-1 px-2.5 h-9 rounded-full bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 text-xs font-bold transition-colors max-w-[130px]"
+                onClick={() => setProfileModalOpen(true)}
+                title={`Profil: ${participant.nama} (${participant.email})`}
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-full bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 text-xs font-bold transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px] shrink-0">account_circle</span>
-                <span className="truncate">{participant.nama.split(' ')[0]}</span>
-                <span className="material-symbols-outlined text-[14px] shrink-0">logout</span>
+                <span>Profil</span>
               </button>
             ) : (
               <button
@@ -720,14 +673,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             <ThemeToggleButton theme={theme} onToggle={onToggleTheme} compact />
             <button
               type="button"
-              onClick={() => setInfoModal('event')}
-              title="Info Event"
-              className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            >
-              <span className="material-symbols-outlined text-[21px]">info</span>
-            </button>
-            <button
-              type="button"
               onClick={onNavigateAdmin}
               title="Portal Admin / Panitia"
               className="w-9 h-9 flex items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:text-blue-700 transition-colors"
@@ -739,7 +684,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 w-full pt-22 pb-24 px-4 max-w-lg mx-auto flex flex-col gap-5">
+      <main className="flex-1 w-full pt-19 pb-24 px-4 max-w-lg mx-auto flex flex-col gap-5">
         {/* Change-Seat Banner (FR-12) */}
         {changeSeatBooking && (
           <div className="p-3.5 rounded-2xl bg-blue-600 text-white shadow-md flex items-start justify-between gap-3">
@@ -773,8 +718,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
 
         {/* 1. Header Info Event Card */}
         <section className="w-full bg-white rounded-2xl p-4 shadow-sm border border-slate-200/80 flex flex-col gap-3 relative overflow-hidden">
-          <div className="absolute -right-10 -top-10 w-36 h-36 bg-blue-50 rounded-full blur-2xl pointer-events-none" />
-          <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="relative z-10 flex items-center justify-between gap-2 flex-wrap">
             {registrationClosed ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-700 text-[11px] uppercase tracking-wider font-bold">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
@@ -793,11 +737,11 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             )}
 
             {activeBus && (
-              <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-[11px]">
-                <span className="material-symbols-outlined text-[15px] text-blue-600">
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-[11px]">
+                <span className="material-symbols-outlined text-[15px] text-blue-600 dark:text-blue-400">
                   airline_seat_recline_normal
                 </span>
-                <span className="font-bold text-slate-900">
+                <span className="font-bold text-slate-900 dark:text-slate-100">
                   {activeBus.nama}: {activeBus.availableSeats}/{activeBus.totalSeats} Tersedia
                 </span>
               </div>
@@ -821,18 +765,17 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
           </div>
         </section>
 
-        {/* 1B. Status Akun Peserta / Mode Tamu */}
-        {!participant ? (
-          <section className="w-full bg-blue-50/80 border border-blue-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-xs">
+        {/* 1B. Mode Tamu */}
+        {!participant && (
+          <section className="w-full bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/80 rounded-2xl p-3.5 flex items-center justify-between gap-3 shadow-xs">
             <div className="flex items-start gap-2.5 min-w-0">
-              <span className="material-symbols-outlined text-blue-600 text-[20px] shrink-0 mt-0.5">
+              <span className="material-symbols-outlined text-blue-600 dark:text-blue-400 text-[20px] shrink-0 mt-0.5">
                 mail
               </span>
               <div className="text-xs leading-relaxed">
-                <div className="font-bold text-blue-950">Mode Tamu (Lihat Denah)</div>
-                <p className="text-slate-600 mt-0.5">
-                  Masuk atau daftar dengan <strong>Email</strong> (tanpa password) untuk memesan kursi dan
-                  melihat E-Tiket Anda.
+                <div className="font-bold text-blue-950 dark:text-blue-200">Mode Tamu (Lihat Denah)</div>
+                <p className="text-slate-600 dark:text-slate-300 mt-0.5">
+                  Masuk atau daftar dengan <strong>Email</strong> untuk memesan kursi dan melihat E-Tiket Anda.
                 </p>
               </div>
             </div>
@@ -847,89 +790,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             >
               Masuk / Daftar
             </button>
-          </section>
-        ) : (
-          <section
-            className={`w-full rounded-2xl p-3.5 border shadow-xs space-y-2.5 ${
-              participant.isPhoneRegistered
-                ? 'bg-emerald-50/70 border-emerald-200'
-                : 'bg-amber-50/80 border-amber-200'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-extrabold text-slate-900 truncate">
-                    {participant.nama}
-                  </span>
-                  {participant.isPhoneRegistered ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                      <span className="material-symbols-outlined text-[12px]">verified</span>
-                      Nomor Terdaftar • Siap Pesan
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold">
-                      <span className="material-symbols-outlined text-[12px]">block</span>
-                      Nomor Belum Terdaftar Admin
-                    </span>
-                  )}
-                </div>
-                <div className="text-[11px] text-slate-600 mt-0.5 truncate">
-                  {participant.email} • WA:{' '}
-                  <strong className="font-mono">
-                    {participant.noWhatsapp ? formatWhatsAppDisplay(participant.noWhatsapp) : 'Belum diisi'}
-                  </strong>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setProfileWaInput(
-                    participant.noWhatsapp ? formatWhatsAppDisplay(participant.noWhatsapp) : ''
-                  );
-                  setEditingWa((v) => !v);
-                }}
-                className="shrink-0 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
-              >
-                {editingWa ? 'Tutup' : 'Ubah WA'}
-              </button>
-            </div>
-
-            {!participant.isPhoneRegistered && (
-              <p className="text-[11px] text-amber-900 leading-relaxed">
-                {participant.noWhatsapp ? (
-                  <>
-                    Anda berhasil login dengan email, namun{' '}
-                    <strong>nomor WhatsApp Anda belum didaftarkan oleh panitia/admin</strong> sehingga
-                    belum bisa memesan kursi. Hubungi admin untuk mendaftarkan nomor Anda.
-                  </>
-                ) : (
-                  <>
-                    Akun email aktif. Masukkan <strong>Nomor WhatsApp</strong> Anda yang sudah
-                    didaftarkan panitia/admin untuk verifikasi sebelum memilih kursi:
-                  </>
-                )}
-              </p>
-            )}
-
-            {(editingWa || !participant.isPhoneRegistered) && (
-              <form onSubmit={handleSaveProfileWa} className="flex gap-2 pt-1">
-                <input
-                  type="tel"
-                  required
-                  value={profileWaInput}
-                  onChange={(e) => setProfileWaInput(e.target.value)}
-                  placeholder="Masukkan No. WA (cth. 081234567890)"
-                  className="flex-1 h-9 px-3 rounded-xl bg-white border border-slate-300 text-xs"
-                />
-                <button
-                  type="submit"
-                  className="px-3.5 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shrink-0"
-                >
-                  Verifikasi Nomor
-                </button>
-              </form>
-            )}
           </section>
         )}
 
@@ -948,7 +808,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                     : 'text-slate-600 hover:text-slate-900 font-semibold'
                 } disabled:opacity-70`}
               >
-                <span>🧍</span>
+                <span className="material-symbols-outlined text-[18px]">person</span>
                 <span>Sendiri</span>
               </button>
               <button
@@ -961,7 +821,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                     : 'text-slate-600 hover:text-slate-900 font-semibold'
                 } disabled:opacity-70`}
               >
-                <span>👫</span>
+                <span className="material-symbols-outlined text-[18px]">group</span>
                 <span>Suami &amp; Istri</span>
               </button>
             </div>
@@ -1030,7 +890,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                       )}
                     </div>
                     <span className="text-xs text-slate-500 mt-0.5 truncate">
-                      {activeBus.tipeArmada} • {activeBus.totalSeats} Penumpang
+                      {activeBus.tipeArmada}
                     </span>
                   </div>
                 </div>
@@ -1076,11 +936,11 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                   onClick={() => handleGenderChange('L')}
                   className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border transition-all ${
                     gender === 'L'
-                      ? 'border-2 border-blue-500 bg-blue-50 text-blue-800 font-bold shadow-sm'
+                      ? 'border-2 border-sky-400 bg-sky-50 dark:bg-sky-950/60 text-sky-800 dark:text-sky-200 font-bold shadow-sm'
                       : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 font-semibold'
                   } disabled:opacity-75`}
                 >
-                  <span>👨</span>
+                  <span className="material-symbols-outlined text-[18px]">male</span>
                   <span className="text-xs sm:text-[13px]">Laki-laki</span>
                 </button>
                 <button
@@ -1089,11 +949,11 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                   onClick={() => handleGenderChange('P')}
                   className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border transition-all ${
                     gender === 'P'
-                      ? 'border-2 border-rose-400 bg-rose-50 text-rose-700 font-bold shadow-sm'
+                      ? 'border-2 border-pink-300 bg-pink-50 dark:bg-pink-950/55 text-pink-700 dark:text-pink-200 font-bold shadow-sm'
                       : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 font-semibold'
                   } disabled:opacity-75`}
                 >
-                  <span>👩</span>
+                  <span className="material-symbols-outlined text-[18px]">female</span>
                   <span className="text-xs sm:text-[13px]">Perempuan</span>
                 </button>
               </div>
@@ -1104,13 +964,13 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                 <p className="text-xs leading-relaxed text-slate-700">
                   {gender === 'P' ? (
                     <>
-                      Anda memilih <strong className="text-rose-600">Perempuan</strong>. Kursi bersebelahan
+                      Anda memilih <strong className="text-pink-700 dark:text-pink-300">Perempuan</strong>. Kursi bersebelahan
                       dengan laki-laki otomatis dinonaktifkan, dan kursi berlabel <strong>KHUSUS P</strong>{' '}
                       dapat Anda pilih.
                     </>
                   ) : gender === 'L' ? (
                     <>
-                      Anda memilih <strong className="text-blue-700">Laki-laki</strong>. Kursi di sebelah
+                      Anda memilih <strong className="text-sky-700 dark:text-sky-300">Laki-laki</strong>. Kursi di sebelah
                       penumpang perempuan ditandai <strong>KHUSUS P</strong> dan tidak dapat dipilih.
                     </>
                   ) : (
@@ -1176,7 +1036,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             <div className="flex items-center justify-between px-1 gap-2 flex-wrap">
               <div className="flex flex-col">
                 <h3 className="text-base text-slate-900 font-bold">Denah Kursi {activeBus.nama}</h3>
-                <span className="text-xs text-slate-500">Kapasitas 38 Penumpang (2-2 + 6 Belakang)</span>
               </div>
               <span className="px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -1210,7 +1069,6 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
               <h3 className="text-base text-slate-900 font-bold">
                 {changeSeatBooking ? 'Konfirmasi Kursi Baru' : 'Data Pemesan Kursi'}
               </h3>
-              <span className="text-xs text-slate-500">Lengkapi info untuk E-Tiket resmi</span>
             </div>
             <div
               className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 ${
@@ -1232,15 +1090,17 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
           {mode === 'suami_istri' && selectedSeats.length === 2 && (
             <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs">
               <div className="flex flex-col gap-0.5 text-slate-700">
-                <span>
-                  👨 Suami:{' '}
-                  <strong className="text-blue-800">
+                <span className="inline-flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[15px] text-sky-500">male</span>
+                  Suami:{' '}
+                  <strong className="text-sky-700 dark:text-sky-300">
                     {selectedSeats.find((s) => s.role === 'suami')?.label}
                   </strong>
                 </span>
-                <span>
-                  👩 Istri:{' '}
-                  <strong className="text-rose-700">
+                <span className="inline-flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[15px] text-pink-500">female</span>
+                  Istri:{' '}
+                  <strong className="text-pink-700 dark:text-pink-300">
                     {selectedSeats.find((s) => s.role === 'istri')?.label}
                   </strong>
                 </span>
@@ -1306,22 +1166,20 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs text-slate-700 font-semibold" htmlFor="whatsapp">
-                Nomor WhatsApp Terdaftar
+                Nomor WhatsApp Aktif
               </label>
               <input
                 id="whatsapp"
                 type="tel"
                 required
-                disabled={Boolean(changeSeatBooking) || Boolean(participant?.noWhatsapp)}
+                disabled={Boolean(changeSeatBooking)}
                 value={noWhatsapp}
                 onChange={(e) => setNoWhatsapp(e.target.value)}
                 placeholder="0812-XXXX-XXXX"
                 className="w-full h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white disabled:opacity-70"
               />
               <span className="text-[11px] text-slate-500">
-                {participant?.noWhatsapp
-                  ? 'Terhubung dengan akun email Anda (maks. ' + event.batasPesananPerWa + ' pesanan aktif).'
-                  : 'Nomor WhatsApp harus sudah didaftarkan oleh panitia/admin.'}
+                Digunakan untuk cek E-Tiket atau pembatalan kursi (maks. {event.batasPesananPerWa} pesanan aktif)
               </span>
             </div>
 
@@ -1341,14 +1199,12 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             ) : (
               <button
                 type="submit"
-                disabled={submitting || registrationClosed || !participant.isPhoneRegistered}
+                disabled={submitting || registrationClosed}
                 className="w-full h-12 mt-1 rounded-xl bg-blue-600 text-white text-sm font-bold shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span>
                   {submitting
                     ? 'Memproses...'
-                    : !participant.isPhoneRegistered
-                    ? 'Nomor Belum Terdaftar Admin'
                     : changeSeatBooking
                     ? 'Simpan Perubahan Kursi'
                     : 'Pesan Seat'}
@@ -1359,9 +1215,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
 
             <div className="flex items-center justify-center gap-1.5 text-center mt-0.5">
               <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
-              <span className="text-xs text-slate-500">
-                Tanpa biaya • Reservasi langsung tercatat ke manifest panitia
-              </span>
+              <span className="text-xs text-slate-500">Tanpa biaya</span>
             </div>
           </form>
         </section>
@@ -1386,7 +1240,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
           {!participant ? (
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2.5 text-center">
               <p className="text-xs text-slate-600 leading-relaxed">
-                Masuk dengan akun <strong>Email</strong> Anda (tanpa password) untuk langsung melihat E-Tiket,
+                Masuk dengan akun <strong>Email</strong> Anda untuk langsung melihat E-Tiket,
                 mengubah kursi, atau membatalkan pesanan.
               </p>
               <button
@@ -1565,16 +1419,16 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
       </main>
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 w-full z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
-        <div className="flex items-center justify-around h-16 max-w-lg mx-auto px-2">
+      <nav className="fixed bottom-0 w-full z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/90 dark:border-slate-800 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+        <div className="flex items-center justify-around h-16 max-w-lg mx-auto px-1">
           <button
             type="button"
             onClick={() => {
               setActiveTab('kursi');
               mapSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center justify-center w-16 h-12 gap-0.5 ${
-              activeTab === 'kursi' ? 'text-blue-600 font-bold' : 'text-slate-500'
+            className={`flex flex-col items-center justify-center flex-1 h-12 gap-0.5 ${
+              activeTab === 'kursi' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-500 dark:text-slate-400'
             }`}
           >
             <span className="material-symbols-outlined text-[20px]">airline_seat_recline_extra</span>
@@ -1587,8 +1441,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
               setActiveTab('jadwal');
               setInfoModal('jadwal');
             }}
-            className={`flex flex-col items-center justify-center w-16 h-12 gap-0.5 ${
-              activeTab === 'jadwal' ? 'text-blue-600 font-bold' : 'text-slate-500'
+            className={`flex flex-col items-center justify-center flex-1 h-12 gap-0.5 ${
+              activeTab === 'jadwal' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-500 dark:text-slate-400'
             }`}
           >
             <span className="material-symbols-outlined text-[20px]">schedule</span>
@@ -1602,8 +1456,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
               lookupSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
               setTimeout(() => lookupInputRef.current?.focus(), 350);
             }}
-            className={`flex flex-col items-center justify-center w-16 h-12 gap-0.5 ${
-              activeTab === 'tiket' ? 'text-blue-600 font-bold' : 'text-slate-500'
+            className={`flex flex-col items-center justify-center flex-1 h-12 gap-0.5 ${
+              activeTab === 'tiket' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-500 dark:text-slate-400'
             }`}
           >
             <span className="material-symbols-outlined text-[20px]">confirmation_number</span>
@@ -1616,12 +1470,32 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
               setActiveTab('event');
               setInfoModal('event');
             }}
-            className={`flex flex-col items-center justify-center w-16 h-12 gap-0.5 ${
-              activeTab === 'event' ? 'text-blue-600 font-bold' : 'text-slate-500'
+            className={`flex flex-col items-center justify-center flex-1 h-12 gap-0.5 ${
+              activeTab === 'event' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-500 dark:text-slate-400'
             }`}
           >
             <span className="material-symbols-outlined text-[20px]">stadium</span>
             <span className="text-[11px]">Event</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('profil');
+              if (participant) {
+                setProfileModalOpen(true);
+              } else {
+                setAuthError(null);
+                setAuthTab('login');
+                setAuthModalOpen(true);
+              }
+            }}
+            className={`flex flex-col items-center justify-center flex-1 h-12 gap-0.5 ${
+              activeTab === 'profil' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-500 dark:text-slate-400'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[20px]">account_circle</span>
+            <span className="text-[11px]">Profil</span>
           </button>
         </div>
       </nav>
@@ -1753,11 +1627,11 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                   </label>
                   <input
                     id="auth-login-email"
-                    type="text"
+                    type="email"
                     required
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="tes atau nama@email.com"
+                    placeholder="nama@email.com"
                     className="w-full h-11 px-3.5 rounded-xl bg-slate-50 border border-slate-300 text-sm focus:outline-none focus:border-blue-600 focus:bg-white"
                   />
                 </div>
@@ -1794,7 +1668,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                   </label>
                   <input
                     id="auth-reg-email"
-                    type="text"
+                    type="email"
                     required
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
@@ -1817,8 +1691,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                   />
                 </div>
                 <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Daftar cukup dengan Email &amp; Nama (tanpa password). Verifikasi nomor WhatsApp terdaftar
-                  dilakukan setelah masuk.
+                  Daftar cukup dengan Email &amp; Nama. Setelah masuk, Anda langsung
+                  bisa memilih dan memesan kursi.
                 </p>
                 {authError && (
                   <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700">
@@ -1834,6 +1708,69 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                 </button>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Participant Profile Modal */}
+      {profileModalOpen && participant && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setProfileModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-9 h-9 rounded-full bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 flex items-center justify-center text-blue-600 dark:text-blue-400">
+                  <span className="material-symbols-outlined text-[20px]">account_circle</span>
+                </span>
+                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">Profil Saya</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileModalOpen(false)}
+                aria-label="Tutup profil"
+                className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Nama</div>
+                <div className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-0.5 break-words">
+                  {participant.nama}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Email</div>
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 mt-0.5 break-all">
+                  {participant.email}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setProfileModalOpen(false)}
+                className="flex-1 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              >
+                Tutup
+              </button>
+              <button
+                type="button"
+                onClick={handleAuthLogout}
+                className="flex-1 h-10 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px]">logout</span>
+                <span>Keluar</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

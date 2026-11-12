@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { Pool, type PoolClient } from 'pg';
 import { BUS_SEAT_TEMPLATES } from '../shared/seatRules.js';
-import { hashPassword } from './auth.js';
+import { hashPassword, verifyPassword } from './auth.js';
 
 export interface DbClient {
   dialect: 'sqlite' | 'postgres';
@@ -224,13 +224,9 @@ async function initSchema(db: DbClient) {
       no_whatsapp TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
-    `CREATE TABLE IF NOT EXISTS registered_phones (
-      id ${pk},
-      no_whatsapp TEXT NOT NULL UNIQUE,
-      catatan TEXT NOT NULL DEFAULT '',
-      dibuat_oleh INTEGER REFERENCES admins(id) ON DELETE SET NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`,
+    `CREATE INDEX IF NOT EXISTS idx_seats_bus ON seats(bus_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_booking_seats_booking ON booking_seats(booking_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_buses_event ON buses(event_id)`,
   ];
 
   for (const sql of statements) {
@@ -250,6 +246,9 @@ async function initSchema(db: DbClient) {
       );
     }
   }
+
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_bookings_participant ON bookings(participant_id)');
+  await db.execute('DROP TABLE IF EXISTS registered_phones');
 }
 
 export async function insertBusSeats(db: DbClient, busId: number) {
@@ -272,43 +271,51 @@ export async function insertBusSeats(db: DbClient, busId: number) {
 }
 
 async function seedDatabase(db: DbClient) {
-  const adminRow = await db.queryOne<{ c: number | string }>('SELECT COUNT(*) as c FROM admins');
-  if (Number(adminRow?.c ?? 0) === 0) {
+  const adminEmail = 'Selangkahtourtravel@gmail.com';
+  const existingAdmin = await db.queryOne<{ id: number | string; password_hash: string }>(
+    'SELECT id, password_hash FROM admins WHERE LOWER(email) = LOWER(?)',
+    [adminEmail]
+  );
+
+  if (!existingAdmin) {
+    const adminPasswordHash = hashPassword('hafizhganteng');
     await db.execute(
       'INSERT INTO admins (nama, email, password_hash, role) VALUES (?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-      [
-        'Admin Selangkah Tour Travel',
-        'Selangkahtourtravel@gmail.com',
-        hashPassword('hafizhganteng'),
-        'super_admin',
-      ]
+      ['Admin Selangkah', adminEmail, adminPasswordHash, 'admin']
     );
+  } else if (!verifyPassword('hafizhganteng', existingAdmin.password_hash)) {
+    const adminPasswordHash = hashPassword('hafizhganteng');
+    await db.execute('UPDATE admins SET password_hash = ? WHERE id = ?', [
+      adminPasswordHash,
+      Number(existingAdmin.id),
+    ]);
   }
 
-  const testAdmin = await db.queryOne("SELECT id FROM admins WHERE LOWER(email) = 'admin'");
-  if (!testAdmin) {
-    await db.execute(
-      'INSERT INTO admins (nama, email, password_hash, role) VALUES (?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-      ['Admin Testing', 'admin', hashPassword('123'), 'super_admin']
-    );
-  }
+  // Ensure only the single designated admin account exists
+  await db.execute('DELETE FROM admins WHERE LOWER(email) <> LOWER(?)', [adminEmail]);
+  await db.execute(
+    "UPDATE admins SET nama = 'Admin Selangkah', role = 'admin' WHERE LOWER(email) = LOWER(?) AND (nama <> 'Admin Selangkah' OR role <> 'admin')",
+    [adminEmail]
+  );
 
   const firstAdmin = await db.queryOne<{ id: number | string }>(
     'SELECT id FROM admins ORDER BY id ASC LIMIT 1'
   );
   const seedAdminId = firstAdmin ? Number(firstAdmin.id) : null;
 
-  const testParticipant = await db.queryOne("SELECT id FROM participants WHERE LOWER(email) = 'tes'");
-  if (!testParticipant) {
-    await db.execute(
-      "INSERT INTO participants (email, nama, no_whatsapp) VALUES ('tes', 'Peserta Testing', '6281234567890') ON CONFLICT (email) DO NOTHING"
-    );
-  }
+  // Remove any legacy default/testing participant accounts & test bookings
   await db.execute(
-    `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
-     VALUES ('6281234567890', 'Nomor Testing (tes)', ?)
-     ON CONFLICT(no_whatsapp) DO NOTHING`,
-    [seedAdminId]
+    "DELETE FROM participants WHERE LOWER(email) IN ('tes', 'tes@gmail.com', 'test@gmail.com') OR nama = 'Peserta Testing'"
+  );
+  await db.execute(
+    `DELETE FROM booking_seats
+     WHERE booking_id IN (
+       SELECT id FROM bookings
+       WHERE nama_pemesan IN ('fgf & fg', 'sd', 'er & er', 'Peserta Testing')
+     )`
+  );
+  await db.execute(
+    "DELETE FROM bookings WHERE nama_pemesan IN ('fgf & fg', 'sd', 'er & er', 'Peserta Testing')"
   );
 
   const eventRow = await db.queryOne<{ c: number | string }>('SELECT COUNT(*) as c FROM events');
@@ -336,78 +343,30 @@ async function seedDatabase(db: DbClient) {
 
     await insertBusSeats(db, busId);
 
-    const getSeatId = async (label: string) => {
-      const row = await db.queryOne<{ id: number | string }>(
-        'SELECT id FROM seats WHERE bus_id = ? AND label = ?',
-        [busId, label]
-      );
-      return Number(row!.id);
-    };
-
-    const b1Id = await db.insertReturningId(
-      `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status)
-       VALUES ('TRS-A101', ?, ?, 'sendiri', 'Ahmad Fauzi', '6281388991234', 'aktif')`,
-      [eventId, busId]
-    );
-    await db.execute(
-      `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-       VALUES (?, ?, 'Ahmad Fauzi', 'L', NULL, 1)`,
-      [b1Id, await getSeatId('A1')]
-    );
-
-    const b2Id = await db.insertReturningId(
-      `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status)
-       VALUES ('TRS-B102', ?, ?, 'sendiri', 'Aisyah Putri', '6281299001122', 'aktif')`,
-      [eventId, busId]
-    );
-    await db.execute(
-      `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-       VALUES (?, ?, 'Aisyah Putri', 'P', NULL, 1)`,
-      [b2Id, await getSeatId('B1')]
-    );
-
-    const b3Id = await db.insertReturningId(
-      `INSERT INTO bookings (kode_booking, event_id, bus_id, mode, nama_pemesan, no_whatsapp, status)
-       VALUES ('TRS-C103', ?, ?, 'suami_istri', 'Rahmat & Nur Aini', '6285711223344', 'aktif')`,
-      [eventId, busId]
-    );
-    await db.execute(
-      `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-       VALUES (?, ?, 'Rahmat', 'L', 'suami', 1)`,
-      [b3Id, await getSeatId('C1')]
-    );
-    await db.execute(
-      `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-       VALUES (?, ?, 'Nur Aini', 'P', 'istri', 1)`,
-      [b3Id, await getSeatId('C2')]
-    );
-
-    await db.execute(
-      `INSERT INTO seat_blocks (seat_id, alasan, dibuat_oleh) VALUES (?, 'Cadangan / Logistik Panitia', ?)`,
-      [await getSeatId('A2'), seedAdminId]
-    );
-
     await db.execute(
       `INSERT INTO audit_logs (admin_id, admin_nama, aksi, objek, detail)
        VALUES (?, 'Sistem', 'INIT_EVENT', 'Event & Bus 1', 'Inisialisasi event awal beserta 38 kursi Bus 1')`,
       [seedAdminId]
     );
-
-    // Seed sample registered phone numbers matching sample bookings
+  } else {
+    // Cleanup legacy dummy seed bookings/block if still present on existing databases
     await db.execute(
-      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
-       VALUES ('6281388991234', 'Ahmad Fauzi (Contoh)', ?) ON CONFLICT(no_whatsapp) DO NOTHING`,
-      [seedAdminId]
+      `DELETE FROM booking_seats
+       WHERE booking_id IN (
+         SELECT id FROM bookings
+         WHERE (kode_booking = 'TRS-A101' AND nama_pemesan = 'Ahmad Fauzi')
+            OR (kode_booking = 'TRS-B102' AND nama_pemesan = 'Aisyah Putri')
+            OR (kode_booking = 'TRS-C103' AND nama_pemesan = 'Rahmat & Nur Aini')
+       )`
     );
     await db.execute(
-      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
-       VALUES ('6281299001122', 'Aisyah Putri (Contoh)', ?) ON CONFLICT(no_whatsapp) DO NOTHING`,
-      [seedAdminId]
+      `DELETE FROM bookings
+       WHERE (kode_booking = 'TRS-A101' AND nama_pemesan = 'Ahmad Fauzi')
+          OR (kode_booking = 'TRS-B102' AND nama_pemesan = 'Aisyah Putri')
+          OR (kode_booking = 'TRS-C103' AND nama_pemesan = 'Rahmat & Nur Aini')`
     );
     await db.execute(
-      `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
-       VALUES ('6285711223344', 'Rahmat & Nur Aini (Contoh)', ?) ON CONFLICT(no_whatsapp) DO NOTHING`,
-      [seedAdminId]
+      `DELETE FROM seat_blocks WHERE alasan = 'Cadangan / Logistik Panitia'`
     );
   }
 }

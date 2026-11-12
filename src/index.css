@@ -7,6 +7,11 @@
 }
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+
   html,
   body {
     font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -50,47 +55,6 @@
   font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
 }
 
-/* Hatched pattern for Khusus Perempuan seats (accessibility for color blindness) */
-.seat-hatch-female {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(225, 29, 72, 0.08),
-    rgba(225, 29, 72, 0.08) 4px,
-    rgba(255, 241, 242, 0.9) 4px,
-    rgba(255, 241, 242, 0.9) 8px
-  );
-}
-
-.dark .seat-hatch-female {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(244, 63, 94, 0.22),
-    rgba(244, 63, 94, 0.22) 4px,
-    rgba(76, 5, 25, 0.72) 4px,
-    rgba(76, 5, 25, 0.72) 8px
-  );
-}
-
-.seat-hatch-male-blocked {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(100, 116, 139, 0.08),
-    rgba(100, 116, 139, 0.08) 4px,
-    rgba(241, 245, 249, 0.95) 4px,
-    rgba(241, 245, 249, 0.95) 8px
-  );
-}
-
-.dark .seat-hatch-male-blocked {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(148, 163, 184, 0.14),
-    rgba(148, 163, 184, 0.14) 4px,
-    rgba(30, 41, 59, 0.85) 4px,
-    rgba(30, 41, 59, 0.85) 8px
-  );
-}
-
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
@@ -114,33 +78,54 @@
   }
 
   html.dark .bg-slate-100,
-  html.dark .bg-slate-100\/90 {
+  html.dark .bg-slate-100\/90,
+  html.dark .bg-slate-200,
+  html.dark .hover\:bg-slate-100:hover,
+  html.dark .hover\:bg-slate-200:hover {
     background-color: #1e293b;
   }
 
   html.dark .bg-blue-50,
   html.dark .bg-blue-50\/70,
-  html.dark .bg-blue-50\/80 {
-    background-color: rgba(30, 58, 138, 0.35);
+  html.dark .bg-blue-50\/80,
+  html.dark .bg-blue-100,
+  html.dark .hover\:bg-blue-50:hover,
+  html.dark .hover\:bg-blue-100:hover {
+    background-color: rgba(30, 58, 138, 0.38);
   }
 
   html.dark .bg-indigo-50,
-  html.dark .bg-indigo-50\/80 {
-    background-color: rgba(49, 46, 129, 0.35);
+  html.dark .bg-indigo-50\/80,
+  html.dark .bg-indigo-100 {
+    background-color: rgba(49, 46, 129, 0.38);
   }
 
   html.dark .bg-emerald-50,
-  html.dark .bg-emerald-50\/70 {
-    background-color: rgba(6, 78, 59, 0.35);
+  html.dark .bg-emerald-50\/70,
+  html.dark .bg-emerald-100 {
+    background-color: rgba(6, 78, 59, 0.42);
   }
 
   html.dark .bg-amber-50,
-  html.dark .bg-amber-50\/80 {
-    background-color: rgba(120, 53, 15, 0.35);
+  html.dark .bg-amber-50\/80,
+  html.dark .bg-amber-100 {
+    background-color: rgba(120, 53, 15, 0.4);
   }
 
-  html.dark .bg-rose-50 {
-    background-color: rgba(136, 19, 55, 0.35);
+  html.dark .bg-rose-50,
+  html.dark .bg-rose-100,
+  html.dark .hover\:bg-rose-100:hover {
+    background-color: rgba(136, 19, 55, 0.4);
+  }
+
+  html.dark .bg-pink-50,
+  html.dark .bg-pink-100 {
+    background-color: rgba(131, 24, 67, 0.38);
+  }
+
+  html.dark .bg-sky-50,
+  html.dark .bg-sky-100 {
+    background-color: rgba(12, 74, 110, 0.4);
   }
 
   html.dark .text-slate-900,
@@ -182,6 +167,20 @@
     color: #fda4af;
   }
 
+  html.dark .text-pink-800,
+  html.dark .text-pink-700 {
+    color: #f9a8d4;
+  }
+
+  html.dark .text-sky-800,
+  html.dark .text-sky-700 {
+    color: #7dd3fc;
+  }
+
+  html.dark .text-indigo-700 {
+    color: #a5b4fc;
+  }
+
   html.dark .border-slate-100,
   html.dark .border-slate-200,
   html.dark .border-slate-200\/80,
@@ -190,11 +189,15 @@
     border-color: #1e293b;
   }
 
-  html.dark .border-blue-200 {
+  html.dark .border-blue-100,
+  html.dark .border-blue-200,
+  html.dark .border-indigo-100 {
     border-color: #1e40af;
   }
 
+  html.dark .border-emerald-100,
   html.dark .border-emerald-200,
+  html.dark .border-emerald-200\/60,
   html.dark .border-emerald-200\/80 {
     border-color: #065f46;
   }
@@ -204,8 +207,19 @@
     border-color: #92400e;
   }
 
+  html.dark .border-rose-100,
   html.dark .border-rose-200 {
     border-color: #9f1239;
+  }
+
+  html.dark .border-pink-200,
+  html.dark .border-pink-300 {
+    border-color: #9d174d;
+  }
+
+  html.dark .border-sky-200,
+  html.dark .border-sky-300 {
+    border-color: #0369a1;
   }
 
   html.dark .divide-slate-100 > :not(:last-child) {
@@ -214,6 +228,10 @@
 }
 
 @media print {
+  @page {
+    size: auto;
+    margin: 12mm;
+  }
   .no-print {
     display: none !important;
   }

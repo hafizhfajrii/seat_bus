@@ -4,7 +4,7 @@ export type CoupleRole = 'suami' | 'istri';
 export type SeatType = 'leg_rest' | 'belakang';
 export type SeatSide = 'kiri' | 'kanan' | 'belakang';
 export type EventRegistrationStatus = 'buka' | 'tutup';
-export type AdminRole = 'super_admin' | 'admin';
+export type AdminRole = 'admin';
 
 export interface SeatTemplateItem {
   label: string;
@@ -137,15 +137,6 @@ export interface ParticipantUser {
   email: string;
   nama: string;
   noWhatsapp: string;
-  isPhoneRegistered: boolean;
-  createdAt: string;
-}
-
-export interface RegisteredPhone {
-  id: number;
-  noWhatsapp: string;
-  catatan: string;
-  hasActiveBooking: boolean;
   createdAt: string;
 }
 

@@ -12,7 +12,6 @@ import type {
   ParticipantUser,
   PublicLookupBooking,
   PublicSeat,
-  RegisteredPhone,
 } from '../shared/types.js';
 import {
   getSeatEligibilityForSingle,
@@ -247,7 +246,10 @@ export async function createOrReplaceHold(
   return db.withTransaction(async (tx) => {
     await purgeExpiredHolds(tx);
     if (params.participantId !== undefined) {
-      await assertParticipantCanBook(tx, params.participantId);
+      const participant = await getParticipantById(tx, params.participantId);
+      if (!participant) {
+        throw new ServiceError('Akun peserta tidak ditemukan. Silakan login kembali.', 401);
+      }
     }
     const event = await getEventInfo(tx);
     assertRegistrationOpen(event);
@@ -360,26 +362,40 @@ async function generateBookingCode(db: DbClient): Promise<string> {
   return 'TRS-' + Date.now().toString(36).toUpperCase();
 }
 
-export async function getBookingDetailById(db: DbClient, bookingId: number): Promise<BookingDetail | null> {
-  const row = await db.queryOne<Record<string, unknown>>(
-    `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
-     FROM bookings bk
-     JOIN buses b ON b.id = bk.bus_id
-     WHERE bk.id = ?`,
-    [bookingId]
-  );
-  if (!row) return null;
-
+async function hydrateBookings(
+  db: DbClient,
+  bookingRows: Array<Record<string, unknown>>
+): Promise<BookingDetail[]> {
+  if (bookingRows.length === 0) return [];
+  const ids = bookingRows.map((r) => Number(r.id));
+  const placeholders = ids.map(() => '?').join(',');
   const seatRows = await db.queryAll<Record<string, unknown>>(
     `SELECT bs.*, s.label, s.tipe, s.baris, s.posisi_desc
      FROM booking_seats bs
      JOIN seats s ON s.id = bs.seat_id
-     WHERE bs.booking_id = ?
-     ORDER BY bs.id ASC`,
-    [bookingId]
+     WHERE bs.booking_id IN (${placeholders})
+     ORDER BY bs.booking_id ASC, bs.id ASC`,
+    ids
   );
 
-  return {
+  const seatsByBooking = new Map<number, BookingDetail['seats']>();
+  for (const sr of seatRows) {
+    const bId = Number(sr.booking_id);
+    const list = seatsByBooking.get(bId) ?? [];
+    list.push({
+      seatId: Number(sr.seat_id),
+      label: String(sr.label),
+      tipe: sr.tipe as 'leg_rest' | 'belakang',
+      baris: String(sr.baris),
+      posisiDesc: String(sr.posisi_desc),
+      namaPenumpang: String(sr.nama_penumpang),
+      jenisKelamin: sr.jenis_kelamin as Gender,
+      peranPasangan: sr.peran_pasangan ? (sr.peran_pasangan as CoupleRole) : null,
+    });
+    seatsByBooking.set(bId, list);
+  }
+
+  return bookingRows.map((row) => ({
     id: Number(row.id),
     kodeBooking: String(row.kode_booking),
     eventId: Number(row.event_id),
@@ -393,17 +409,21 @@ export async function getBookingDetailById(db: DbClient, bookingId: number): Pro
     status: row.status as 'aktif' | 'dibatalkan',
     dibuatPada: String(row.dibuat_pada),
     dibatalkanPada: row.dibatalkan_pada ? String(row.dibatalkan_pada) : null,
-    seats: seatRows.map((sr) => ({
-      seatId: Number(sr.seat_id),
-      label: String(sr.label),
-      tipe: sr.tipe as 'leg_rest' | 'belakang',
-      baris: String(sr.baris),
-      posisiDesc: String(sr.posisi_desc),
-      namaPenumpang: String(sr.nama_penumpang),
-      jenisKelamin: sr.jenis_kelamin as Gender,
-      peranPasangan: sr.peran_pasangan ? (sr.peran_pasangan as CoupleRole) : null,
-    })),
-  };
+    seats: seatsByBooking.get(Number(row.id)) ?? [],
+  }));
+}
+
+export async function getBookingDetailById(db: DbClient, bookingId: number): Promise<BookingDetail | null> {
+  const row = await db.queryOne<Record<string, unknown>>(
+    `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
+     FROM bookings bk
+     JOIN buses b ON b.id = bk.bus_id
+     WHERE bk.id = ?`,
+    [bookingId]
+  );
+  if (!row) return null;
+  const [hydrated] = await hydrateBookings(db, [row]);
+  return hydrated ?? null;
 }
 
 export async function getBookingDetailByCode(
@@ -449,19 +469,6 @@ export async function createBooking(
       if (!participant) {
         throw new ServiceError('Akun peserta tidak ditemukan. Silakan login kembali.', 401);
       }
-      if (participant.noWhatsapp && participant.noWhatsapp !== normalizedWa) {
-        throw new ServiceError(
-          'Nomor WhatsApp pada pemesanan harus sama dengan nomor WhatsApp terdaftar di akun Anda.',
-          403
-        );
-      }
-      const registered = await isPhoneRegistered(tx, normalizedWa);
-      if (!registered) {
-        throw new ServiceError(
-          'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Hubungi admin untuk mendaftarkan nomor Anda agar bisa memesan kursi.',
-          403
-        );
-      }
       if (!participant.noWhatsapp) {
         await tx.execute('UPDATE participants SET no_whatsapp = ? WHERE id = ?', [
           normalizedWa,
@@ -503,7 +510,7 @@ export async function createBooking(
       if (params.seats.length !== 1) {
         throw new ServiceError('Mode Sendiri harus memilih tepat 1 kursi.', 400);
       }
-      const seatLabel = params.seats[0].label;
+      const seatLabel = String(params.seats[0]?.label ?? '').trim().toUpperCase();
       const seat = seatsMap.get(seatLabel);
       if (!seat) throw new ServiceError(`Kursi ${seatLabel} tidak ditemukan.`, 404);
 
@@ -542,14 +549,16 @@ export async function createBooking(
       if (params.seats.length !== 2) {
         throw new ServiceError('Mode Suami & Istri harus memilih 2 kursi bersebelahan.', 400);
       }
-      const suamiPick = params.seats.find((s) => s.role === 'suami') ?? params.seats[0];
-      const istriPick = params.seats.find((s) => s.role === 'istri') ?? params.seats[1];
-      if (suamiPick.label === istriPick.label) {
+      const suamiPick = params.seats.find((s) => s?.role === 'suami') ?? params.seats[0];
+      const istriPick = params.seats.find((s) => s?.role === 'istri') ?? params.seats[1];
+      const suamiLabel = String(suamiPick?.label ?? '').trim().toUpperCase();
+      const istriLabel = String(istriPick?.label ?? '').trim().toUpperCase();
+      if (!suamiLabel || !istriLabel || suamiLabel === istriLabel) {
         throw new ServiceError('Kursi suami dan istri harus berbeda.', 400);
       }
 
-      const suamiSeat = seatsMap.get(suamiPick.label);
-      const istriSeat = seatsMap.get(istriPick.label);
+      const suamiSeat = seatsMap.get(suamiLabel);
+      const istriSeat = seatsMap.get(istriLabel);
       if (!suamiSeat || !istriSeat) {
         throw new ServiceError('Kursi yang dipilih tidak ditemukan.', 404);
       }
@@ -610,37 +619,44 @@ export async function lookupBookingsByWhatsApp(
     [normalized]
   );
 
-  const out: PublicLookupBooking[] = [];
-  for (const r of rows) {
-    const seats = await db.queryAll<Record<string, unknown>>(
-      `SELECT s.label, s.tipe, bs.jenis_kelamin, bs.peran_pasangan, bs.nama_penumpang
-       FROM booking_seats bs
-       JOIN seats s ON s.id = bs.seat_id
-       WHERE bs.booking_id = ?
-       ORDER BY bs.id ASC`,
-      [Number(r.id)]
-    );
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => Number(r.id));
+  const placeholders = ids.map(() => '?').join(',');
+  const seatRows = await db.queryAll<Record<string, unknown>>(
+    `SELECT bs.booking_id, s.label, s.tipe, bs.jenis_kelamin, bs.peran_pasangan, bs.nama_penumpang
+     FROM booking_seats bs
+     JOIN seats s ON s.id = bs.seat_id
+     WHERE bs.booking_id IN (${placeholders})
+     ORDER BY bs.booking_id ASC, bs.id ASC`,
+    ids
+  );
 
-    out.push({
-      id: Number(r.id),
-      kodeBooking: String(r.kode_booking),
-      busId: Number(r.bus_id),
-      busNama: String(r.bus_nama),
-      mode: r.mode as BookingMode,
-      maskedName: maskPersonName(String(r.nama_pemesan)),
-      noWhatsappMasked: maskWhatsApp(String(r.no_whatsapp)),
-      status: r.status as 'aktif' | 'dibatalkan',
-      dibuatPada: String(r.dibuat_pada),
-      seats: seats.map((s) => ({
-        label: String(s.label),
-        tipe: s.tipe as 'leg_rest' | 'belakang',
-        jenisKelamin: s.jenis_kelamin as Gender,
-        peranPasangan: s.peran_pasangan ? (s.peran_pasangan as CoupleRole) : null,
-        maskedPassengerName: maskPersonName(String(s.nama_penumpang)),
-      })),
+  const seatsByBooking = new Map<number, PublicLookupBooking['seats']>();
+  for (const s of seatRows) {
+    const bId = Number(s.booking_id);
+    const list = seatsByBooking.get(bId) ?? [];
+    list.push({
+      label: String(s.label),
+      tipe: s.tipe as 'leg_rest' | 'belakang',
+      jenisKelamin: s.jenis_kelamin as Gender,
+      peranPasangan: s.peran_pasangan ? (s.peran_pasangan as CoupleRole) : null,
+      maskedPassengerName: maskPersonName(String(s.nama_penumpang)),
     });
+    seatsByBooking.set(bId, list);
   }
-  return out;
+
+  return rows.map((r) => ({
+    id: Number(r.id),
+    kodeBooking: String(r.kode_booking),
+    busId: Number(r.bus_id),
+    busNama: String(r.bus_nama),
+    mode: r.mode as BookingMode,
+    maskedName: maskPersonName(String(r.nama_pemesan)),
+    noWhatsappMasked: maskWhatsApp(String(r.no_whatsapp)),
+    status: r.status as 'aktif' | 'dibatalkan',
+    dibuatPada: String(r.dibuat_pada),
+    seats: seatsByBooking.get(Number(r.id)) ?? [],
+  }));
 }
 
 export async function cancelBookingByParticipant(
@@ -729,7 +745,8 @@ export async function changeBookingSeats(
         throw new ServiceError('Mode Sendiri harus memilih 1 kursi baru.', 400);
       }
       const oldSeat = existing.seats[0];
-      const newSeat = seatsMap.get(params.seats[0].label);
+      const newSeatLabel = String(params.seats[0]?.label ?? '').trim().toUpperCase();
+      const newSeat = seatsMap.get(newSeatLabel);
       if (!newSeat) throw new ServiceError('Kursi baru tidak ditemukan.', 404);
 
       const check = getSeatEligibilityForSingle(newSeat, seatsMap, oldSeat.jenisKelamin, {
@@ -739,21 +756,25 @@ export async function changeBookingSeats(
         throw new ServiceError(check.reason ?? 'Kursi baru tidak valid.', 409);
       }
 
-      await tx.execute('DELETE FROM booking_seats WHERE booking_id = ?', [existing.id]);
-      await tx.execute('UPDATE bookings SET bus_id = ? WHERE id = ?', [params.busId, existing.id]);
-      await tx.execute(
-        `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-         VALUES (?, ?, ?, ?, NULL, 1)`,
-        [existing.id, newSeat.id, oldSeat.namaPenumpang, oldSeat.jenisKelamin]
-      );
+      try {
+        await tx.execute('DELETE FROM booking_seats WHERE booking_id = ?', [existing.id]);
+        await tx.execute('UPDATE bookings SET bus_id = ? WHERE id = ?', [params.busId, existing.id]);
+        await tx.execute(
+          `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
+           VALUES (?, ?, ?, ?, NULL, 1)`,
+          [existing.id, newSeat.id, oldSeat.namaPenumpang, oldSeat.jenisKelamin]
+        );
+      } catch {
+        throw new ServiceError('Kursi baru saja dipesan peserta lain. Silakan pilih kursi lain.', 409);
+      }
     } else {
       if (params.seats.length !== 2) {
         throw new ServiceError('Mode Suami & Istri harus memilih 2 kursi bersebelahan.', 400);
       }
-      const suamiPick = params.seats.find((s) => s.role === 'suami') ?? params.seats[0];
-      const istriPick = params.seats.find((s) => s.role === 'istri') ?? params.seats[1];
-      const suamiSeat = seatsMap.get(suamiPick.label);
-      const istriSeat = seatsMap.get(istriPick.label);
+      const suamiPick = params.seats.find((s) => s?.role === 'suami') ?? params.seats[0];
+      const istriPick = params.seats.find((s) => s?.role === 'istri') ?? params.seats[1];
+      const suamiSeat = seatsMap.get(String(suamiPick?.label ?? '').trim().toUpperCase());
+      const istriSeat = seatsMap.get(String(istriPick?.label ?? '').trim().toUpperCase());
       if (!suamiSeat || !istriSeat) throw new ServiceError('Kursi baru tidak ditemukan.', 404);
 
       const coupleCheck = validateCoupleSelection(suamiSeat, istriSeat, seatsMap, {
@@ -766,18 +787,22 @@ export async function changeBookingSeats(
       const oldSuami = existing.seats.find((s) => s.peranPasangan === 'suami') ?? existing.seats[0];
       const oldIstri = existing.seats.find((s) => s.peranPasangan === 'istri') ?? existing.seats[1];
 
-      await tx.execute('DELETE FROM booking_seats WHERE booking_id = ?', [existing.id]);
-      await tx.execute('UPDATE bookings SET bus_id = ? WHERE id = ?', [params.busId, existing.id]);
-      await tx.execute(
-        `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-         VALUES (?, ?, ?, 'L', 'suami', 1)`,
-        [existing.id, suamiSeat.id, oldSuami.namaPenumpang]
-      );
-      await tx.execute(
-        `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
-         VALUES (?, ?, ?, 'P', 'istri', 1)`,
-        [existing.id, istriSeat.id, oldIstri.namaPenumpang]
-      );
+      try {
+        await tx.execute('DELETE FROM booking_seats WHERE booking_id = ?', [existing.id]);
+        await tx.execute('UPDATE bookings SET bus_id = ? WHERE id = ?', [params.busId, existing.id]);
+        await tx.execute(
+          `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
+           VALUES (?, ?, ?, 'L', 'suami', 1)`,
+          [existing.id, suamiSeat.id, oldSuami.namaPenumpang]
+        );
+        await tx.execute(
+          `INSERT INTO booking_seats (booking_id, seat_id, nama_penumpang, jenis_kelamin, peran_pasangan, active_flag)
+           VALUES (?, ?, ?, 'P', 'istri', 1)`,
+          [existing.id, istriSeat.id, oldIstri.namaPenumpang]
+        );
+      } catch {
+        throw new ServiceError('Salah satu kursi baru saja dipesan peserta lain. Silakan pilih ulang.', 409);
+      }
     }
 
     await tx.execute('DELETE FROM seat_holds WHERE session_id = ?', [params.sessionId]);
@@ -787,6 +812,24 @@ export async function changeBookingSeats(
 
 // ---------------- ADMIN OPERATIONS ----------------
 
+async function resolveValidAdminId(db: DbClient, admin: AdminSessionPayload): Promise<number | null> {
+  if (admin.id) {
+    const foundById = await db.queryOne<{ id: number | string }>(
+      'SELECT id FROM admins WHERE id = ?',
+      [admin.id]
+    );
+    if (foundById) return Number(foundById.id);
+  }
+  if (admin.email) {
+    const foundByEmail = await db.queryOne<{ id: number | string }>(
+      'SELECT id FROM admins WHERE LOWER(email) = LOWER(?)',
+      [admin.email]
+    );
+    if (foundByEmail) return Number(foundByEmail.id);
+  }
+  return null;
+}
+
 export async function writeAuditLog(
   db: DbClient,
   admin: AdminSessionPayload,
@@ -794,9 +837,10 @@ export async function writeAuditLog(
   objek: string,
   detail: string
 ) {
+  const safeAdminId = await resolveValidAdminId(db, admin);
   await db.execute(
     'INSERT INTO audit_logs (admin_id, admin_nama, aksi, objek, detail) VALUES (?, ?, ?, ?, ?)',
-    [admin.id, admin.nama, aksi, objek, detail]
+    [safeAdminId, admin.nama || 'Admin', aksi, objek, detail]
   );
 }
 
@@ -825,11 +869,12 @@ export async function adminToggleBlockSeat(
       }
       await tx.execute('DELETE FROM seat_holds WHERE seat_id = ?', [params.seatId]);
       const alasan = (params.alasan ?? '').trim() || 'Diblokir Panitia';
+      const safeAdminId = await resolveValidAdminId(tx, admin);
       await tx.execute(
         `INSERT INTO seat_blocks (seat_id, alasan, dibuat_oleh)
          VALUES (?, ?, ?)
          ON CONFLICT(seat_id) DO UPDATE SET alasan = excluded.alasan, dibuat_oleh = excluded.dibuat_oleh`,
-        [params.seatId, alasan, admin.id]
+        [params.seatId, alasan, safeAdminId]
       );
       await writeAuditLog(
         tx,
@@ -867,9 +912,6 @@ export async function adminManualBook(
   }
 ): Promise<BookingDetail> {
   const wantOverride = Boolean(params.override);
-  if (wantOverride && admin.role !== 'super_admin') {
-    throw new ServiceError('Hanya Super Admin yang dapat melakukan pengecualian aturan kursi.', 403);
-  }
   if (wantOverride && !(params.overrideReason ?? '').trim()) {
     throw new ServiceError('Alasan pengecualian wajib diisi saat menggunakan override aturan.', 400);
   }
@@ -984,9 +1026,6 @@ export async function adminMoveBookingSeats(
   }
 ): Promise<BookingDetail> {
   const wantOverride = Boolean(params.override);
-  if (wantOverride && admin.role !== 'super_admin') {
-    throw new ServiceError('Hanya Super Admin yang dapat melakukan pengecualian aturan kursi.', 403);
-  }
   if (wantOverride && !(params.overrideReason ?? '').trim()) {
     throw new ServiceError('Alasan pengecualian wajib diisi.', 400);
   }
@@ -1116,59 +1155,68 @@ export async function adminCancelBooking(
 }
 
 export async function listAllBookings(db: DbClient, busId?: number): Promise<BookingDetail[]> {
-  const rows = busId
-    ? await db.queryAll<{ id: number }>('SELECT id FROM bookings WHERE bus_id = ? ORDER BY id DESC', [busId])
-    : await db.queryAll<{ id: number }>('SELECT id FROM bookings ORDER BY id DESC');
-
-  const result: BookingDetail[] = [];
-  for (const r of rows) {
-    const detail = await getBookingDetailById(db, Number(r.id));
-    if (detail) result.push(detail);
-  }
-  return result;
+  const where = busId ? 'WHERE bk.bus_id = ?' : '';
+  const rows = await db.queryAll<Record<string, unknown>>(
+    `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
+     FROM bookings bk
+     JOIN buses b ON b.id = bk.bus_id
+     ${where}
+     ORDER BY bk.id DESC`,
+    busId ? [busId] : []
+  );
+  return hydrateBookings(db, rows);
 }
 
 export async function getDashboardSummary(db: DbClient): Promise<DashboardSummary> {
   await purgeExpiredHolds(db);
   const buses = (await getBuses(db, true)).filter((b) => b.aktif);
-  const busSummaries = [];
+  const countRows = await db.queryAll<{
+    bus_id: number | string;
+    male_count: number | string | null;
+    female_count: number | string | null;
+  }>(
+    `SELECT s.bus_id,
+      SUM(CASE WHEN bs.jenis_kelamin = 'L' THEN 1 ELSE 0 END) AS male_count,
+      SUM(CASE WHEN bs.jenis_kelamin = 'P' THEN 1 ELSE 0 END) AS female_count
+     FROM booking_seats bs
+     JOIN seats s ON s.id = bs.seat_id
+     WHERE bs.active_flag = 1
+     GROUP BY s.bus_id`
+  );
+  const countMap = new Map(
+    countRows.map((r) => [
+      Number(r.bus_id),
+      { male: Number(r.male_count ?? 0), female: Number(r.female_count ?? 0) },
+    ])
+  );
 
-  for (const b of buses) {
-    const counts = await db.queryOne<{ male_count: number | string | null; female_count: number | string | null }>(
-      `SELECT
-        SUM(CASE WHEN bs.jenis_kelamin = 'L' THEN 1 ELSE 0 END) AS male_count,
-        SUM(CASE WHEN bs.jenis_kelamin = 'P' THEN 1 ELSE 0 END) AS female_count
-       FROM booking_seats bs
-       JOIN seats s ON s.id = bs.seat_id
-       WHERE s.bus_id = ? AND bs.active_flag = 1`,
-      [b.id]
-    );
-
-    busSummaries.push({
+  const busSummaries = buses.map((b) => {
+    const counts = countMap.get(b.id) ?? { male: 0, female: 0 };
+    return {
       busId: b.id,
       nama: b.nama,
       total: b.totalSeats,
       occupied: b.occupiedSeats,
       available: b.availableSeats,
       blocked: b.blockedSeats,
-      maleCount: Number(counts?.male_count ?? 0),
-      femaleCount: Number(counts?.female_count ?? 0),
-    });
-  }
+      maleCount: counts.male,
+      femaleCount: counts.female,
+    };
+  });
 
   const coupleRow = await db.queryOne<{ c: number | string }>(
     "SELECT COUNT(*) AS c FROM bookings WHERE mode = 'suami_istri' AND status = 'aktif'"
   );
   const holdRow = await db.queryOne<{ c: number | string }>('SELECT COUNT(*) AS c FROM seat_holds');
-  const recentIds = await db.queryAll<{ id: number }>(
-    "SELECT id FROM bookings WHERE status = 'aktif' ORDER BY id DESC LIMIT 6"
+  const recentRows = await db.queryAll<Record<string, unknown>>(
+    `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
+     FROM bookings bk
+     JOIN buses b ON b.id = bk.bus_id
+     WHERE bk.status = 'aktif'
+     ORDER BY bk.id DESC
+     LIMIT 6`
   );
-
-  const recentBookings: BookingDetail[] = [];
-  for (const r of recentIds) {
-    const detail = await getBookingDetailById(db, Number(r.id));
-    if (detail) recentBookings.push(detail);
-  }
+  const recentBookings = await hydrateBookings(db, recentRows);
 
   return {
     totalCapacity: busSummaries.reduce((acc, b) => acc + b.total, 0),
@@ -1184,13 +1232,7 @@ export async function getDashboardSummary(db: DbClient): Promise<DashboardSummar
   };
 }
 
-// ---------------- PARTICIPANT AUTH & REGISTERED PHONES ----------------
-
-export async function isPhoneRegistered(db: DbClient, normalizedWa: string): Promise<boolean> {
-  if (!normalizedWa) return false;
-  const row = await db.queryOne('SELECT 1 FROM registered_phones WHERE no_whatsapp = ?', [normalizedWa]);
-  return Boolean(row);
-}
+// ---------------- PARTICIPANT AUTH ----------------
 
 export async function getParticipantById(
   db: DbClient,
@@ -1201,39 +1243,13 @@ export async function getParticipantById(
     [participantId]
   );
   if (!row) return null;
-  const wa = String(row.no_whatsapp ?? '');
-  const registered = wa ? await isPhoneRegistered(db, wa) : false;
   return {
     id: Number(row.id),
     email: String(row.email),
     nama: String(row.nama ?? ''),
-    noWhatsapp: wa,
-    isPhoneRegistered: registered,
+    noWhatsapp: String(row.no_whatsapp ?? ''),
     createdAt: String(row.created_at),
   };
-}
-
-export async function assertParticipantCanBook(
-  db: DbClient,
-  participantId: number
-): Promise<ParticipantUser> {
-  const participant = await getParticipantById(db, participantId);
-  if (!participant) {
-    throw new ServiceError('Akun peserta tidak ditemukan. Silakan login kembali.', 401);
-  }
-  if (!participant.noWhatsapp) {
-    throw new ServiceError(
-      'Silakan lengkapi nomor WhatsApp Anda di profil akun sebelum memilih kursi.',
-      403
-    );
-  }
-  if (!participant.isPhoneRegistered) {
-    throw new ServiceError(
-      'Nomor WhatsApp Anda belum terdaftar oleh panitia/admin. Anda tetap dapat login dengan email, namun belum dapat memesan kursi sampai nomor Anda didaftarkan admin.',
-      403
-    );
-  }
-  return participant;
 }
 
 export async function registerParticipant(
@@ -1241,7 +1257,7 @@ export async function registerParticipant(
   params: { email: string; nama: string; noWhatsapp?: string }
 ): Promise<ParticipantUser> {
   const email = params.email.trim().toLowerCase();
-  if (email !== 'tes' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new ServiceError('Format email tidak valid.', 400);
   }
   const nama = params.nama.trim();
@@ -1278,7 +1294,7 @@ export async function loginParticipantByEmail(
   rawEmail: string
 ): Promise<ParticipantUser> {
   const email = rawEmail.trim().toLowerCase();
-  if (email !== 'tes' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new ServiceError('Format email tidak valid.', 400);
   }
   const row = await db.queryOne<{ id: number }>(
@@ -1332,99 +1348,23 @@ export async function getMyBookings(
   const participant = await getParticipantById(db, participantId);
   if (!participant) return [];
 
-  const rows =
-    participant.noWhatsapp && participant.isPhoneRegistered
-      ? await db.queryAll<{ id: number }>(
-          `SELECT id FROM bookings
-           WHERE participant_id = ? OR no_whatsapp = ?
-           ORDER BY CASE WHEN status = 'aktif' THEN 0 ELSE 1 END ASC, id DESC`,
-          [participant.id, participant.noWhatsapp]
-        )
-      : await db.queryAll<{ id: number }>(
-          `SELECT id FROM bookings
-           WHERE participant_id = ?
-           ORDER BY CASE WHEN status = 'aktif' THEN 0 ELSE 1 END ASC, id DESC`,
-          [participant.id]
-        );
-
-  const out: BookingDetail[] = [];
-  for (const r of rows) {
-    const detail = await getBookingDetailById(db, Number(r.id));
-    if (detail) out.push(detail);
-  }
-  return out;
-}
-
-export async function listRegisteredPhones(db: DbClient): Promise<RegisteredPhone[]> {
-  const rows = await db.queryAll<Record<string, unknown>>(
-    `SELECT rp.id, rp.no_whatsapp, rp.catatan, rp.created_at,
-      EXISTS(
-        SELECT 1 FROM bookings b WHERE b.no_whatsapp = rp.no_whatsapp AND b.status = 'aktif'
-      ) AS has_active
-     FROM registered_phones rp
-     ORDER BY rp.id DESC`
-  );
-  return rows.map((r) => ({
-    id: Number(r.id),
-    noWhatsapp: String(r.no_whatsapp),
-    catatan: String(r.catatan ?? ''),
-    hasActiveBooking: Boolean(r.has_active && Number(r.has_active) !== 0),
-    createdAt: String(r.created_at),
-  }));
-}
-
-export async function addRegisteredPhonesBulk(
-  db: DbClient,
-  admin: AdminSessionPayload,
-  entries: Array<{ noWhatsapp: string; catatan?: string }>
-): Promise<{ added: number; invalid: string[] }> {
-  let added = 0;
-  const invalid: string[] = [];
-
-  await db.withTransaction(async (tx) => {
-    for (const entry of entries) {
-      const raw = entry.noWhatsapp.trim();
-      if (!raw) continue;
-      const norm = normalizeWhatsApp(raw);
-      if (!isValidWhatsApp(norm)) {
-        invalid.push(raw);
-        continue;
-      }
-      const note = (entry.catatan ?? '').trim();
-      await tx.execute(
-        `INSERT INTO registered_phones (no_whatsapp, catatan, dibuat_oleh)
-         VALUES (?, ?, ?)
-         ON CONFLICT(no_whatsapp) DO UPDATE SET
-           catatan = CASE WHEN excluded.catatan != '' THEN excluded.catatan ELSE registered_phones.catatan END`,
-        [norm, note, admin.id]
+  const rows = participant.noWhatsapp
+    ? await db.queryAll<Record<string, unknown>>(
+        `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
+         FROM bookings bk
+         JOIN buses b ON b.id = bk.bus_id
+         WHERE bk.participant_id = ? OR bk.no_whatsapp = ?
+         ORDER BY CASE WHEN bk.status = 'aktif' THEN 0 ELSE 1 END ASC, bk.id DESC`,
+        [participant.id, participant.noWhatsapp]
+      )
+    : await db.queryAll<Record<string, unknown>>(
+        `SELECT bk.*, b.nama AS bus_nama, b.plat_nomor AS bus_plat, b.tipe_armada AS bus_tipe
+         FROM bookings bk
+         JOIN buses b ON b.id = bk.bus_id
+         WHERE bk.participant_id = ?
+         ORDER BY CASE WHEN bk.status = 'aktif' THEN 0 ELSE 1 END ASC, bk.id DESC`,
+        [participant.id]
       );
-      added++;
-    }
 
-    if (added > 0) {
-      await writeAuditLog(
-        tx,
-        admin,
-        'ADD_REGISTERED_PHONES',
-        `${added} Nomor WA`,
-        `Menambahkan/memperbarui ${added} nomor WhatsApp peserta terdaftar`
-      );
-    }
-  });
-
-  return { added, invalid };
-}
-
-export async function deleteRegisteredPhone(
-  db: DbClient,
-  admin: AdminSessionPayload,
-  id: number
-) {
-  const row = await db.queryOne<{ no_whatsapp: string }>(
-    'SELECT no_whatsapp FROM registered_phones WHERE id = ?',
-    [id]
-  );
-  if (!row) throw new ServiceError('Nomor terdaftar tidak ditemukan.', 404);
-  await db.execute('DELETE FROM registered_phones WHERE id = ?', [id]);
-  await writeAuditLog(db, admin, 'DELETE_REGISTERED_PHONE', row.no_whatsapp, 'Dihapus dari daftar nomor');
+  return hydrateBookings(db, rows);
 }
