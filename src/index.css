@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+    overflow-x: hidden;
+  }
+}
+
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
+}
+
+/* Hatched pattern for Khusus Perempuan seats (accessibility for color blindness) */
+.seat-hatch-female {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(225, 29, 72, 0.08),
+    rgba(225, 29, 72, 0.08) 4px,
+    rgba(255, 241, 242, 0.9) 4px,
+    rgba(255, 241, 242, 0.9) 8px
+  );
+}
+
+.seat-hatch-male-blocked {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(100, 116, 139, 0.08),
+    rgba(100, 116, 139, 0.08) 4px,
+    rgba(241, 245, 249, 0.95) 4px,
+    rgba(241, 245, 249, 0.95) 8px
+  );
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+  }
+  .print-only-block {
+    display: block !important;
+  }
+}
+
