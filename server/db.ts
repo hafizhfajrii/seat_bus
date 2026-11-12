@@ -433,8 +433,11 @@ export async function createDatabase(options?: { dbPath?: string; connectionStri
 
   const rawDb = new DatabaseSync(resolvedPath);
   rawDb.exec('PRAGMA journal_mode = WAL;');
+  rawDb.exec('PRAGMA synchronous = NORMAL;');
   rawDb.exec('PRAGMA foreign_keys = ON;');
   rawDb.exec('PRAGMA busy_timeout = 5000;');
+  rawDb.exec('PRAGMA cache_size = -32000;');
+  rawDb.exec('PRAGMA temp_store = MEMORY;');
 
   const db = createSqliteClient(rawDb);
   await initSchema(db);

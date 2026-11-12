@@ -1,7 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { ParticipantView } from './components/ParticipantView';
-import { AdminView } from './components/AdminView';
 import { useTheme } from './theme';
+
+// Halaman admin dimuat hanya saat dibuka, sehingga peserta tidak mengunduh kode admin.
+const AdminView = lazy(() =>
+  import('./components/AdminView').then((m) => ({ default: m.AdminView }))
+);
 
 export const App: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
@@ -28,11 +32,19 @@ export const App: React.FC = () => {
 
   if (route === 'admin') {
     return (
-      <AdminView
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onNavigateParticipant={() => navigate('participant')}
-      />
+      <Suspense
+        fallback={
+          <div role="status" aria-live="polite" className="p-6 text-center text-sm opacity-70">
+            Memuat halaman admin...
+          </div>
+        }
+      >
+        <AdminView
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onNavigateParticipant={() => navigate('participant')}
+        />
+      </Suspense>
     );
   }
 

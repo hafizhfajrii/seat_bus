@@ -26,6 +26,11 @@ interface ParticipantViewProps {
   onNavigateAdmin: () => void;
 }
 
+// Hindari render ulang seluruh halaman bila isi data dari server tidak berubah.
+function keepIfEqual<T>(prev: T, next: T): T {
+  return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+}
+
 export const ParticipantView: React.FC<ParticipantViewProps> = ({
   theme,
   onToggleTheme,
@@ -87,6 +92,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
   const formSectionRef = useRef<HTMLDivElement>(null);
   const lookupSectionRef = useRef<HTMLDivElement>(null);
   const lookupInputRef = useRef<HTMLInputElement>(null);
+  const holdSeq = useRef(0);
+  const refreshSeq = useRef(0);
 
   const activeBus = useMemo(
     () => buses.find((b) => b.id === activeBusId) ?? buses[0] ?? null,
@@ -142,40 +149,95 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
     }
   }, [loadParticipantSession]);
 
-  const refreshBusSeats = useCallback(async (busId: number) => {
-    try {
-      const [evData, seatData] = await Promise.all([
-        publicApi.getEvent(),
-        publicApi.getBusSeats(busId),
-      ]);
-      setEvent(evData.event);
-      setBuses(evData.buses);
-      setSeats(seatData.seats);
-    } catch {
-      // ignore background refresh error
-    }
-  }, []);
+  const refreshBusSeats = useCallback(
+    async (busId: number, opts: { withEvent?: boolean } = {}): Promise<boolean> => {
+      const withEvent = opts.withEvent ?? true;
+      const seq = ++refreshSeq.current;
+      try {
+        const [evData, seatData] = await Promise.all([
+          withEvent ? publicApi.getEvent() : Promise.resolve(null),
+          publicApi.getBusSeats(busId),
+        ]);
+        // Ada permintaan yang lebih baru: abaikan balasan lama agar data tidak "mundur".
+        if (seq !== refreshSeq.current) return true;
+        if (evData) {
+          setEvent((prev) => keepIfEqual(prev, evData.event));
+          setBuses((prev) => keepIfEqual(prev, evData.buses));
+        } else {
+          setBuses((prev) =>
+            keepIfEqual(
+              prev,
+              prev.map((b) => (b.id === seatData.bus.id ? seatData.bus : b))
+            )
+          );
+        }
+        setSeats((prev) => keepIfEqual(prev, seatData.seats));
+        return true;
+      } catch {
+        // Gagal di latar belakang: abaikan, polling berikutnya mencoba lagi.
+        return false;
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
 
-  // Real-time SSE + 6s fallback polling (gracefully falls back to polling on Vercel serverless)
+  // Pembaruan denah: SSE hanya di komputer lokal. Di produksi memakai polling dengan jeda acak,
+  // berhenti saat tab tidak terlihat, dan melambat bertahap bila server sedang sibuk atau gagal.
   useEffect(() => {
     if (!activeBusId) return;
-    const es = new EventSource('/api/stream');
-    es.addEventListener('seat-update', () => {
-      refreshBusSeats(activeBusId);
-    });
-    es.onerror = () => {
-      es.close();
+    let cancelled = false;
+    let running = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let tick = 0;
+    let failures = 0;
+
+    const schedule = () => {
+      if (cancelled) return;
+      clearTimeout(timer);
+      const base = 5000 * Math.min(4, 1 + failures); // 5 dtk, lalu 10, 15, 20 dtk bila gagal
+      timer = setTimeout(run, base + Math.random() * 2000);
     };
-    const timer = setInterval(() => {
-      refreshBusSeats(activeBusId);
-    }, 6000);
+    const run = async () => {
+      if (cancelled || running) return;
+      running = true;
+      try {
+        if (document.visibilityState === 'visible') {
+          tick += 1;
+          // Info event/bus lain cukup diperbarui tiap 3 putaran; denah kursi tiap putaran.
+          const ok = await refreshBusSeats(activeBusId, { withEvent: tick % 3 === 1 });
+          failures = ok ? 0 : failures + 1;
+        }
+      } finally {
+        running = false;
+      }
+      schedule();
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || running) return;
+      clearTimeout(timer);
+      void run();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    schedule();
+
+    let es: EventSource | null = null;
+    if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+      es = new EventSource('/api/stream');
+      es.addEventListener('seat-update', () => {
+        void refreshBusSeats(activeBusId);
+      });
+      es.onerror = () => es?.close();
+    }
+
     return () => {
-      es.close();
-      clearInterval(timer);
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      es?.close();
     };
   }, [activeBusId, refreshBusSeats]);
 
@@ -205,6 +267,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
 
   // Clear selection helper
   const clearSelection = useCallback(async () => {
+    holdSeq.current += 1;
     setSelectedSeats([]);
     setHoldExpiresAt(null);
     try {
@@ -261,6 +324,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
           : ('L' as Gender),
     }));
 
+    const seq = ++holdSeq.current;
+    setSelectedSeats(nextSelected); // optimistik: kursi langsung terpilih tanpa menunggu server
     try {
       const res = await publicApi.holdSeats({
         busId: activeBusId,
@@ -268,16 +333,17 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
         seats: holdPayload,
         ignoreSeatLabels,
       });
-      setSelectedSeats(nextSelected);
+      if (seq !== holdSeq.current) return; // pilihan yang lebih baru sudah menggantikan
       setHoldExpiresAt(Date.parse(res.expiresAt));
-      await refreshBusSeats(activeBusId);
+      void refreshBusSeats(activeBusId, { withEvent: false });
     } catch (err) {
+      if (seq !== holdSeq.current) return;
       setAlertBanner({
         type: 'error',
         text: err instanceof Error ? err.message : 'Kursi baru saja dipesan peserta lain.',
       });
       await clearSelection();
-      await refreshBusSeats(activeBusId);
+      void refreshBusSeats(activeBusId, { withEvent: false });
     }
   };
 
@@ -1346,76 +1412,100 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                 </button>
               </form>
 
-          {lookupError && (
-            <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
-              {lookupError}
-            </div>
-          )}
-
-          {lookupResults !== null && (
-            <div className="space-y-2.5 pt-1">
-              {lookupResults.length === 0 ? (
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 text-center">
-                  Tidak ada pesanan aktif ditemukan untuk nomor WhatsApp tersebut.
+              {lookupError && (
+                <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
+                  {lookupError}
                 </div>
-              ) : (
-                lookupResults.map((bk) => (
-                  <div
-                    key={bk.id}
-                    className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-xs font-bold text-blue-700">{bk.kodeBooking}</span>
-                          <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                            {bk.busNama}
+              )}
+
+              {lookupResults !== null && (
+                <div className="space-y-2.5 pt-1">
+                  {lookupResults.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 text-center">
+                      Tidak ada pesanan aktif ditemukan untuk nomor WhatsApp tersebut.
+                    </div>
+                  ) : (
+                    lookupResults.map((bk) => (
+                      <div
+                        key={bk.id}
+                        className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-xs font-bold text-blue-700">{bk.kodeBooking}</span>
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                {bk.busNama}
+                              </span>
+                            </div>
+                            <p className="text-xs font-semibold text-slate-800 mt-1">{bk.maskedName}</p>
+                            <p className="text-[11px] text-slate-500">
+                              {bk.mode === 'suami_istri' ? 'Suami & Istri' : 'Sendiri'} • WA: {bk.noWhatsappMasked}
+                            </p>
+                          </div>
+                          <span className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 text-xs font-extrabold">
+                            {bk.seats.map((s) => s.label).join(' & ')}
                           </span>
                         </div>
-                        <p className="text-xs font-semibold text-slate-800 mt-1">{bk.maskedName}</p>
-                        <p className="text-[11px] text-slate-500">
-                          {bk.mode === 'suami_istri' ? 'Suami & Istri' : 'Sendiri'} • WA: {bk.noWhatsappMasked}
-                        </p>
-                      </div>
-                      <span className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 text-xs font-extrabold">
-                        {bk.seats.map((s) => s.label).join(' & ')}
-                      </span>
-                    </div>
 
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenTicketFromLookup(bk.kodeBooking)}
-                        className="flex-1 h-9 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
-                      >
-                        Lihat E-Tiket
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const res = await publicApi.getTicket(bk.kodeBooking, lookupWa);
-                          await handleStartChangeSeat(res.booking, lookupWa);
-                        }}
-                        className="px-3 h-9 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold"
-                      >
-                        Ubah
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCancelTarget(bk)}
-                        className="px-3 h-9 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 text-xs font-semibold"
-                      >
-                        Batalkan
-                      </button>
-                    </div>
-                  </div>
-                ))
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenTicketFromLookup(bk.kodeBooking)}
+                            className="flex-1 h-9 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+                          >
+                            Lihat E-Tiket
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const res = await publicApi.getTicket(bk.kodeBooking, lookupWa);
+                              await handleStartChangeSeat(res.booking, lookupWa);
+                            }}
+                            className="px-3 h-9 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold"
+                          >
+                            Ubah
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCancelTarget(bk)}
+                            className="px-3 h-9 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 text-xs font-semibold"
+                          >
+                            Batalkan
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               )}
-            </div>
-          )}
             </div>
           </details>
         </section>
+
+        {/* Subtle Developer Attribution Footer */}
+        <footer className="pt-6 pb-6 text-center select-none">
+          <a
+            href="https://www.linkedin.com/in/hafizh-ala-udin-fajri-860593317"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 hover:text-blue-600 dark:text-slate-500 dark:hover:text-blue-400 bg-slate-100/70 hover:bg-blue-50/80 dark:bg-slate-900/60 dark:hover:bg-blue-950/40 border border-slate-200/60 dark:border-slate-800 transition-all duration-200 group"
+            title="Dikembangkan oleh Hafizh Fajri"
+          >
+            <span className="material-symbols-outlined text-[13px] text-blue-500/70 group-hover:text-blue-600 transition-colors">
+              code
+            </span>
+            <span>
+              Dibuat oleh{' '}
+              <strong className="font-semibold text-slate-600 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                Hafizh Fajri
+              </strong>
+            </span>
+            <span className="material-symbols-outlined text-[12px] opacity-60 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all">
+              open_in_new
+            </span>
+          </a>
+        </footer>
       </main>
 
       {/* Bottom Navigation */}

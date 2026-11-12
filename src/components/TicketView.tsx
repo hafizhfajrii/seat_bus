@@ -524,6 +524,29 @@ export const TicketView: React.FC<TicketViewProps> = ({
                 <span>Kembali ke Denah Utama</span>
               </button>
             </div>
+
+            <div className="no-print pt-4 text-center select-none">
+              <a
+                href="https://www.linkedin.com/in/hafizh-ala-udin-fajri-860593317"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 hover:text-blue-600 dark:text-slate-500 dark:hover:text-blue-400 bg-slate-100/60 hover:bg-blue-50/80 dark:bg-slate-900/60 dark:hover:bg-blue-950/40 border border-slate-200/50 dark:border-slate-800/50 transition-all duration-200 group"
+                title="Dikembangkan oleh Hafizh Fajri"
+              >
+                <span className="material-symbols-outlined text-[13px] text-blue-500/70 group-hover:text-blue-600 transition-colors">
+                  code
+                </span>
+                <span>
+                  Dibuat oleh{' '}
+                  <strong className="font-semibold text-slate-600 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    Hafizh Fajri
+                  </strong>
+                </span>
+                <span className="material-symbols-outlined text-[12px] opacity-60 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all">
+                  open_in_new
+                </span>
+              </a>
+            </div>
           </div>
         </div>
       </main>

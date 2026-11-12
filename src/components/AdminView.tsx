@@ -196,22 +196,38 @@ export const AdminView: React.FC<AdminViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Real-time SSE + fallback polling sync for admin
+  // Real-time SSE (lokal) + fallback polling sync yang efisien untuk admin
   useEffect(() => {
     if (!currentAdmin) return;
-    const es = new EventSource('/api/stream');
-    es.addEventListener('seat-update', () => {
-      loadAdminData(activeBusId ?? undefined);
-    });
-    es.onerror = () => {
-      es.close();
-    };
+
+    let es: EventSource | null = null;
+    if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+      es = new EventSource('/api/stream');
+      es.addEventListener('seat-update', () => {
+        loadAdminData(activeBusId ?? undefined);
+      });
+      es.onerror = () => {
+        es?.close();
+      };
+    }
+
     const timer = setInterval(() => {
-      loadAdminData(activeBusId ?? undefined);
+      if (document.visibilityState === 'visible') {
+        loadAdminData(activeBusId ?? undefined);
+      }
     }, 10000);
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        loadAdminData(activeBusId ?? undefined);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
-      es.close();
+      es?.close();
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [currentAdmin, activeBusId, loadAdminData]);
 
@@ -723,6 +739,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
             >
               Keluar
             </button>
+          </div>
+          <div className="pt-2 text-center select-none">
+            <a
+              href="https://www.linkedin.com/in/hafizh-ala-udin-fajri-860593317"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 hover:text-blue-600 transition-colors"
+              title="Dikembangkan oleh Hafizh Fajri"
+            >
+              <span>Dibuat oleh Hafizh Fajri</span>
+              <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+            </a>
           </div>
         </div>
       </aside>
@@ -1950,6 +1978,29 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
           </div>
+
+          <footer className="no-print pt-6 pb-4 text-center select-none">
+            <a
+              href="https://www.linkedin.com/in/hafizh-ala-udin-fajri-860593317"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium text-slate-400 hover:text-blue-600 bg-slate-100/70 hover:bg-blue-50/80 border border-slate-200/60 transition-all duration-200 group"
+              title="Dikembangkan oleh Hafizh Fajri"
+            >
+              <span className="material-symbols-outlined text-[13px] text-blue-500/70 group-hover:text-blue-600 transition-colors">
+                code
+              </span>
+              <span>
+                Dibuat oleh{' '}
+                <strong className="font-semibold text-slate-600 group-hover:text-blue-600 transition-colors">
+                  Hafizh Fajri
+                </strong>
+              </span>
+              <span className="material-symbols-outlined text-[12px] opacity-60 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all">
+                open_in_new
+              </span>
+            </a>
+          </footer>
         </div>
       </main>
 
